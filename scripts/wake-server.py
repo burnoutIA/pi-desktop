@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["vosk>=0.3.45", "websockets>=13"]
+# dependencies = ["vosk>=0.3.44", "websockets>=13"]
 # ///
 """Détecteur du nom de l'agent (mot de réveil), sur processeur, avec Vosk.
 

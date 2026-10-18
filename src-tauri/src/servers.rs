@@ -74,9 +74,10 @@ impl Servers {
             self.set(&app, State::Starting);
             let log = crate::applog::path().with_file_name("voice-server.log");
             let out = std::fs::File::create(&log).ok();
-            // `setsid` : le script devient chef d'un groupe de processus, qu'on arrête d'un coup.
-            let mut cmd = std::process::Command::new("setsid");
-            cmd.arg(root.join("scripts/voice-server.sh"))
+            // Le script devient chef d'un groupe de processus, qu'on arrête d'un coup.
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new(root.join("scripts/voice-server.sh"));
+            cmd.process_group(0)
                 .current_dir(&root)
                 // Filet de sécurité : le script s'arrête de lui-même si l'app disparaît.
                 .env("PIVOICE_PARENT", std::process::id().to_string());
@@ -108,7 +109,9 @@ impl Servers {
     pub fn shutdown(&self) {
         if let Some(pgid) = self.pgid.lock().unwrap().take() {
             crate::applog!("serveurs vocaux : arrêt (groupe {pgid})");
-            let _ = std::process::Command::new("kill").args(["-TERM", "--", &format!("-{pgid}")]).status();
+            // Le `kill` de macOS n'accepte pas `--` avant un groupe (pid négatif).
+            let args: &[&str] = if cfg!(target_os = "macos") { &["-TERM"] } else { &["-TERM", "--"] };
+            let _ = std::process::Command::new("kill").args(args).arg(format!("-{pgid}")).status();
         }
     }
 }

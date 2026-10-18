@@ -34,6 +34,21 @@ npm install
 
 Pour le serveur vocal, il faut un GPU NVIDIA (CUDA 12), `uv` et `gcc-13`. La RTX 3090 convient largement.
 
+### Sur Mac (Apple Silicon)
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
+brew install uv cmake
+npm install
+npx tauri build --no-bundle
+```
+
+`scripts/voice-server.sh` détecte macOS et s'adapte tout seul :
+- la transcription tourne sur `moshi-server` compilé avec Metal ;
+- la synthèse passe par l'implémentation MLX de Kyutai (`scripts/tts-mlx-server.py`, même protocole sur le port 8089). Le TTS PyTorch de moshi-server était 5 fois trop lent sur le GPU Apple.
+
+Sur un M4 de base (17 Go), la synthèse va 1,2 fois plus vite que le temps réel, et le premier son arrive en ~1 s. Pour cela, le modèle est quantifié en 4 bits. `PIVOICE_TTS_BITS=8` donne une meilleure qualité si la machine suit. Les trois serveurs prennent ~7 Go. `scripts/install-desktop.sh` ne concerne que Linux : sur Mac, lance l'app avec `scripts/run.sh`.
+
 ## Lancer
 
 ```bash

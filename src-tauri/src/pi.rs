@@ -72,7 +72,7 @@ fn extra_bin_dirs() -> Vec<String> {
     ["/.pi/agent/bin", "/.local/bin", "/bin", "/.local/node/bin", "/.npm-global/bin"]
         .iter()
         .map(|d| format!("{home}{d}"))
-        .chain(["/snap/bin".to_string(), "/usr/local/bin".to_string()])
+        .chain(["/snap/bin", "/usr/local/bin", "/opt/homebrew/bin"].map(String::from))
         .collect()
 }
 
