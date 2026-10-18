@@ -13,26 +13,57 @@ pub const MODEL_RATE: u32 = 24_000;
 pub const BANDS: usize = 40;
 const FFT_SIZE: usize = 2048;
 
+/// Réserve avant de jouer une synthèse en flux (0,5 s à 24 kHz) : si la synthèse va à peine plus
+/// vite que le temps réel, on joue sans trous au lieu de grésiller à chaque retard.
+const PREBUFFER: usize = MODEL_RATE as usize / 2;
+
 /// File d'échantillons TTS (24 kHz) lue par le callback de sortie.
 #[derive(Default)]
 pub struct Playback {
     queue: VecDeque<f32>,
     frac: f64,
+    /// Une synthèse en flux est en cours : d'autres échantillons vont arriver.
+    streaming: bool,
+    /// On attend d'avoir assez d'avance avant de (re)jouer.
+    holding: bool,
 }
 
 impl Playback {
     pub fn push(&mut self, pcm: &[f32]) {
         self.queue.extend(pcm.iter().copied());
     }
+    /// Début d'une synthèse en flux : on accumule une réserve avant de jouer.
+    pub fn begin_stream(&mut self) {
+        self.streaming = true;
+        self.holding = true;
+    }
+    /// Plus rien n'arrivera : on joue ce qui reste, même sous la réserve.
+    pub fn end_stream(&mut self) {
+        self.streaming = false;
+        self.holding = false;
+    }
     pub fn clear(&mut self) {
         self.queue.clear();
         self.frac = 0.0;
+        self.streaming = false;
+        self.holding = false;
     }
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
     /// Échantillon suivant au débit de sortie (interpolation linéaire).
     fn next(&mut self, step: f64) -> f32 {
+        if self.holding {
+            if self.queue.len() < PREBUFFER {
+                return 0.0;
+            }
+            self.holding = false;
+        }
+        if self.streaming && self.queue.len() < 2 {
+            // La synthèse a pris du retard : courte pause plutôt qu'un son haché.
+            self.holding = true;
+            return 0.0;
+        }
         let s = match (self.queue.front(), self.queue.get(1)) {
             (Some(&a), Some(&b)) => a + (b - a) * self.frac as f32,
             (Some(&a), None) => a,
@@ -68,6 +99,9 @@ impl Ring {
 pub struct AudioShared {
     /// Nombre d'échantillons reçus du micro (pour détecter un micro muet).
     pub mic_samples: std::sync::atomic::AtomicU64,
+    /// Crête du micro depuis le démarrage (bits d'un f32) : un micro sans autorisation
+    /// (macOS) envoie bien des échantillons, mais tous nuls.
+    pub mic_peak: std::sync::atomic::AtomicU32,
     pub playback: Mutex<Playback>,
     pub out_ring: Mutex<Ring>,
     pub in_ring: Mutex<Ring>,
@@ -77,6 +111,7 @@ impl AudioShared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             mic_samples: std::sync::atomic::AtomicU64::new(0),
+            mic_peak: std::sync::atomic::AtomicU32::new(0),
             playback: Mutex::new(Playback::default()),
             out_ring: Mutex::new(Ring::new()),
             in_ring: Mutex::new(Ring::new()),
@@ -185,6 +220,9 @@ where
                 }
             }
             shared.mic_samples.fetch_add(mono.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            let peak = mono.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            // Pour des f32 positifs, l'ordre des bits suit l'ordre des valeurs.
+            shared.mic_peak.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
             if let Some((last, rest)) = tx.split_last() {
                 for t in rest {
                     let _ = t.send(mono.clone());
@@ -303,5 +341,20 @@ mod tests {
         p.push(&vec![1.0; 240]);
         let n = (0..1000).take_while(|_| p.next(0.5) != 0.0).count();
         assert!((n as i32 - 480).abs() <= 2, "{n}");
+    }
+
+    #[test]
+    fn playback_waits_for_prebuffer_then_plays_the_tail() {
+        let mut p = Playback::default();
+        p.begin_stream();
+        p.push(&vec![1.0; PREBUFFER - 1]);
+        assert_eq!(p.next(1.0), 0.0, "pas assez d'avance : silence");
+        p.push(&[1.0]);
+        assert_eq!(p.next(1.0), 1.0, "réserve atteinte : on joue");
+        let mut p = Playback::default();
+        p.begin_stream();
+        p.push(&vec![1.0; 100]);
+        p.end_stream();
+        assert_eq!(p.next(1.0), 1.0, "fin du flux : on joue même sous la réserve");
     }
 }

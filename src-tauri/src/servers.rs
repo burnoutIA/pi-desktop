@@ -41,7 +41,12 @@ pub fn project_root() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     let exe = std::env::current_exe().ok()?;
-    exe.ancestors().find(|d| d.join("scripts/voice-server.sh").is_file()).map(PathBuf::from)
+    if let Some(d) = exe.ancestors().find(|d| d.join("scripts/voice-server.sh").is_file()) {
+        return Some(PathBuf::from(d));
+    }
+    // App copiée ailleurs (Pi Voice.app dans ~/Applications) : le dossier où elle a été compilée.
+    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent()?.to_path_buf();
+    built.join("scripts/voice-server.sh").is_file().then_some(built)
 }
 
 impl Servers {

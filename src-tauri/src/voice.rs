@@ -314,8 +314,15 @@ impl VoiceEngine {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     let n = me.audio.mic_samples.load(Ordering::Relaxed);
-                    crate::applog!("audio : {n} échantillons reçus du micro en 3 s");
-                    if n == 0 {
+                    let peak = f32::from_bits(me.audio.mic_peak.load(Ordering::Relaxed));
+                    crate::applog!("audio : {n} échantillons reçus du micro en 3 s, crête {peak:.4}");
+                    if n > 0 && peak == 0.0 && cfg!(target_os = "macos") {
+                        let _ = me.app.emit(
+                            "voice-error",
+                            "Le micro ne renvoie que du silence : autorise l'accès au micro dans Réglages \
+                             Système → Confidentialité et sécurité → Micro (pour le terminal qui lance l'app).",
+                        );
+                    } else if n == 0 {
                         let _ = me.app.emit(
                             "voice-error",
                             "Le micro ne renvoie aucun son. Débranche/rebranche-le, ou relance PipeWire \
@@ -943,6 +950,7 @@ impl VoiceEngine {
 
     fn open_tts(self: &Arc<Self>, cfg: &VoiceConfig) -> TtsSession {
         let id = self.tts_ids.fetch_add(1, Ordering::SeqCst) + 1;
+        self.audio.playback.lock().unwrap().begin_stream();
         let (tx, mut rx) = mpsc::unbounded_channel::<TtsOut>();
         let url = with_auth(&format!(
             "{}/api/tts_streaming?voice={}&format=PcmMessagePack&cfg_alpha=1.5",
@@ -1020,6 +1028,8 @@ impl VoiceEngine {
         let mut guard = self.tts.lock().unwrap();
         if guard.as_ref().is_some_and(|s| s.id == id) {
             let s = guard.take().unwrap();
+            // Le serveur a tout envoyé : on joue la fin, même plus courte que la réserve.
+            self.audio.playback.lock().unwrap().end_stream();
             let mut t = self.turn.lock().unwrap();
             t.echo_words = s.words;
             t.echo_until = None; // l'audio peut encore être en lecture : `is_speaking` le couvre

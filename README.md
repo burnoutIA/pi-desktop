@@ -47,7 +47,7 @@ npx tauri build --no-bundle
 - la transcription tourne sur `moshi-server` compilé avec Metal ;
 - la synthèse passe par l'implémentation MLX de Kyutai (`scripts/tts-mlx-server.py`, même protocole sur le port 8089). Le TTS PyTorch de moshi-server était 5 fois trop lent sur le GPU Apple.
 
-Sur un M4 de base (17 Go), la synthèse va 1,2 fois plus vite que le temps réel, et le premier son arrive en ~1 s. Pour cela, le modèle est quantifié en 4 bits. `PIVOICE_TTS_BITS=8` donne une meilleure qualité si la machine suit. Les trois serveurs prennent ~7 Go. `scripts/install-desktop.sh` ne concerne que Linux : sur Mac, lance l'app avec `scripts/run.sh`.
+Sur un M4 de base (17 Go), la synthèse va 1,3 fois plus vite que le temps réel, et le premier son arrive en ~1 s. Pour cela, le modèle est quantifié en 8 bits (le 4 bits sature le son). `PIVOICE_TTS_NQ=16` donne plus de marge, `PIVOICE_TTS_NQ=32` la qualité complète sur une puce plus puissante. Les trois serveurs prennent ~7 Go. `scripts/install-desktop.sh` installe `Pi Voice.app` dans `~/Applications` : au premier lancement, elle demande l'accès au micro.
 
 ## Lancer
 

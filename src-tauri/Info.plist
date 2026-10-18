@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Fusionné par Tauri dans l'Info.plist de Pi Voice.app : sans cette clé, macOS ne demande pas
+     l'accès au micro et l'app ne reçoit que du silence. -->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Pi Voice écoute ta voix pour la transcrire et l'envoyer à pi. L'audio reste sur ta machine.</string>
+</dict>
+</plist>

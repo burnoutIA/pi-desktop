@@ -76,6 +76,46 @@ def load(repo: str, quantize: int | None, n_q: int) -> TTSModel:
     )
 
 
+class FastLmGen(LmGen):
+    """LmGen sans ses vérifications `if (…).any()` : chacune force une synchronisation avec le GPU,
+    une trentaine par pas (une par codebook), soit une bonne part du temps de calcul sur Mac."""
+
+    def _step(self, other_audio_tokens, ct=None, cross_attention_src=None):
+        if self.step_idx >= self.max_steps:
+            raise ValueError(f"reached max-steps {self.max_steps}")
+        if self.step_idx == 0:
+            text_tokens = mx.full((self.batch_size, 1), self.model.cfg.text_out_vocab_size, dtype=mx.int32)
+        else:
+            text_tokens = self.gen_sequence[:, 0, self.step_idx - 1 : self.step_idx]
+        self.gen_sequence[:, 1 + self.main_codebooks :, self.step_idx] = other_audio_tokens
+        audio_tokens = []
+        for cb_idx, delay in enumerate(self.audio_delays):
+            gen_idx = self.step_idx - 1 - delay
+            if gen_idx >= 0:
+                audio_tokens.append(self.gen_sequence[:, cb_idx + 1, gen_idx][None])
+            else:
+                audio_tokens.append(mx.array([[self.audio_padding_token]]))
+        text_tokens, audio_tokens, transformer_out = self.model._sample(
+            text_tokens, audio_tokens, self.text_sampler, self.audio_sampler, ct=ct,
+            cross_attention_src=cross_attention_src, cfg_coef=self.cfg_coef,
+            on_text_hook=self.on_text_hook, on_audio_hook=self.on_audio_hook,
+        )
+        self.gen_sequence[:, 0, self.step_idx] = text_tokens.squeeze(-1)
+        for cb_idx, delay in enumerate(self.audio_delays[: self.main_codebooks]):
+            gen_idx = self.step_idx - delay
+            if gen_idx >= 0:
+                self.gen_sequence[:, cb_idx + 1, gen_idx] = audio_tokens[:, cb_idx, 0]
+        self.step_idx += 1
+        return text_tokens, transformer_out
+
+    def last_audio_tokens(self):
+        # Pendant les premiers pas (retards des codebooks), rien n'est encore prêt : connu sans GPU.
+        gen_idx = self.step_idx - 1 - self.max_delay
+        if gen_idx < 0:
+            return None
+        return self.gen_sequence[:, 1 : 1 + self.main_codebooks, gen_idx]
+
+
 _conditionings: dict = {}
 
 
@@ -128,7 +168,7 @@ class Synth:
                 self.on_word(self.state.transcript[-1][0])
             tokens[:] = mx.array([[o]], dtype=mx.int64)
 
-        self.gen = LmGen(
+        self.gen = FastLmGen(
             tts.lm, max_steps=tts.max_gen_length, text_sampler=Sampler(temp=tts.temp),
             audio_sampler=Sampler(temp=tts.temp), cfg_coef=1.0, on_text_hook=on_text, on_audio_hook=on_audio,
         )

@@ -72,13 +72,14 @@ run() { # nom port config
 uv_script() { (cd "$ROOT" && unset PYTHONHOME PYTHONPATH DYLD_LIBRARY_PATH VIRTUAL_ENV && uv run -q "$@"); }
 
 # Sur Mac, le TTS de moshi-server (PyTorch) est 5× trop lent : on prend l'implémentation MLX de
-# Kyutai. Quantifiée en 4 bits par défaut pour tenir le temps réel sur une puce de base ;
-# PIVOICE_TTS_BITS=8 pour plus de qualité si la machine suit.
+# Kyutai, quantifiée en 8 bits (en 4 bits, le depformer sature le son). Avec 24 codebooks, un M4
+# de base va 1,3× plus vite que le temps réel ; PIVOICE_TTS_NQ=16 pour plus de marge (son un peu
+# moins fin), PIVOICE_TTS_NQ=32 pour la qualité complète sur une puce plus puissante.
 run_tts() {
   if [ "$(uname)" != Darwin ]; then run tts 8089 "$CONFIGS/tts.toml"; return; fi
   if port_busy 8089; then echo "▶ tts déjà actif sur le port 8089"; return; fi
   echo "▶ tts (MLX) sur le port 8089 (le premier lancement télécharge les modèles depuis Hugging Face)"
-  uv_script scripts/tts-mlx-server.py --port 8089 --quantize "${PIVOICE_TTS_BITS:-4}" 2>&1 | sed -u "s/^/[tts] /" &
+  uv_script scripts/tts-mlx-server.py --port 8089 --quantize "${PIVOICE_TTS_BITS:-8}" --n-q "${PIVOICE_TTS_NQ:-24}" 2>&1 | sed -u "s/^/[tts] /" &
 }
 
 run_wake() {
