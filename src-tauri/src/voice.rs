@@ -111,7 +111,7 @@ impl Default for VoiceConfig {
         Self {
             stt_url: "ws://127.0.0.1:8090".into(),
             tts_url: "ws://127.0.0.1:8089".into(),
-            voice: "unmute-prod-website/developpeuse-3.wav".into(),
+            voice: "estelle".into(),
             tts_enabled: true,
             hands_free: false,
             wake_url: default_wake_url(),

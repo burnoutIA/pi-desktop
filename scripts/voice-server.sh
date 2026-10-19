@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installe (la première fois) puis lance les serveurs vocaux Kyutai en local :
 #   STT français  -> ws://127.0.0.1:8090/api/asr-streaming
-#   TTS français  -> ws://127.0.0.1:8089/api/tts_streaming
+#   TTS français  -> ws://127.0.0.1:8089/api/tts_streaming  (Pocket TTS sur le processeur ;
+#                    PIVOICE_TTS=kyutai pour le TTS Kyutai 1,6B sur le GPU, ~8 Go de VRAM)
 #   Réveil (nom)  -> ws://127.0.0.1:8091  (Vosk, processeur, pour le mode mains libres)
 # Usage : scripts/voice-server.sh [stt|tts|wake|all]   (all par défaut)
 set -euo pipefail
@@ -49,6 +50,16 @@ run() { # nom port config
   "$DIR/bin/moshi-server" worker --config "$CONFIGS/$3" --addr 127.0.0.1 --port "$2" 2>&1 | sed -u "s/^/[$1] /" &
 }
 
+run_pocket_tts() {
+  if port_busy 8089; then echo "▶ tts déjà actif sur le port 8089"; return; fi
+  echo "▶ tts Pocket (processeur) sur le port 8089 (le premier lancement télécharge le modèle, ~400 Mo)"
+  (cd "$ROOT" && uv run -q scripts/pocket-tts-server.py --port 8089 2>&1 | sed -u "s/^/[tts] /") &
+}
+
+run_tts() {
+  if [ "${PIVOICE_TTS:-pocket}" = kyutai ]; then run tts 8089 tts.toml; else run_pocket_tts; fi
+}
+
 run_wake() {
   if port_busy 8091; then echo "▶ réveil déjà actif sur le port 8091"; return; fi
   echo "▶ réveil sur le port 8091 (le premier lancement télécharge le modèle Vosk, ~40 Mo)"
@@ -57,9 +68,9 @@ run_wake() {
 
 case "$WHAT" in
   stt) run stt 8090 stt.toml ;;
-  tts) run tts 8089 tts.toml ;;
+  tts) run_tts ;;
   wake) run_wake ;;
-  all) run stt 8090 stt.toml; run tts 8089 tts.toml; run_wake ;;
+  all) run stt 8090 stt.toml; run_tts; run_wake ;;
   *) echo "usage : $0 [stt|tts|wake|all]"; exit 1 ;;
 esac
 trap 'kill 0' INT TERM

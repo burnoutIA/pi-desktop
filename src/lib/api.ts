@@ -91,8 +91,9 @@ export function on<T>(event: string, cb: (payload: T) => void): Promise<Unlisten
   return listen<T>(event, (e) => cb(e.payload));
 }
 
-/** Voix françaises du dépôt kyutai/tts-voices. */
+/** Voix françaises : Pocket TTS (par défaut), puis celles du TTS Kyutai 1,6B (PIVOICE_TTS=kyutai). */
 export const FRENCH_VOICES: { id: string; label: string }[] = [
+  { id: "estelle", label: "Estelle (Pocket TTS, processeur)" },
   { id: "unmute-prod-website/developpeuse-3.wav", label: "Développeuse" },
   { id: "unmute-prod-website/fabieng-enhanced-v2.wav", label: "Fabien" },
   { id: "cml-tts/fr/2154_2576_000020-0003_enhanced.wav", label: "CML · voix 1" },
