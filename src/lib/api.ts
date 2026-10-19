@@ -11,9 +11,6 @@ export type VoiceConfig = {
   wakeWord: string;
   filterDb: number;
   ackOnPause: boolean;
-  /** Conversation duplex (expérimental) : LLM local MicroTurn, micro ouvert en continu. */
-  duplex: boolean;
-  duplexUrl: string;
   /** Agent vocal : répond tout de suite et transmet à pi ce qui est à faire, même quand pi travaille. */
   voiceAgent: boolean;
   /** Serveur compatible OpenAI de l'agent vocal (harn par défaut). */
@@ -64,7 +61,6 @@ export const api = {
   listen: (on: boolean, submit = false) => invoke<void>("voice_listen", { on, submit }),
   stopSpeaking: () => invoke<void>("voice_stop_speaking"),
   speak: (text: string) => invoke<void>("voice_speak", { text }),
-  duplexReset: () => invoke<void>("voice_duplex_reset"),
   voiceAgentAsk: (text: string, piState: string, piModel: string | null) =>
     invoke<void>("voice_agent_ask", { text, piState, piModel }),
   voiceAgentReset: () => invoke<void>("voice_agent_reset"),

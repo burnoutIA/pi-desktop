@@ -310,21 +310,6 @@
         <input value={config.agentUrl} onchange={(e) => set("agentUrl", (e.target as HTMLInputElement).value)} />
       </label>
     {/if}
-    <label class="toggle">
-      <input type="checkbox" checked={config.duplex} onchange={(e) => set("duplex", (e.target as HTMLInputElement).checked)} />
-      <span
-        ><b>Conversation duplex (expérimental)</b><small
-          >micro ouvert en continu, un LLM local décide toutes les 0,6 s de parler ou de t'écouter. Tu peux lui couper la
-          parole. Rien n'est envoyé à pi.</small
-        ></span
-      >
-    </label>
-    {#if config.duplex}
-      <label class="field">
-        <span>LLM duplex (llama-server + LoRA MicroTurn)</span>
-        <input value={config.duplexUrl} onchange={(e) => set("duplexUrl", (e.target as HTMLInputElement).value)} />
-      </label>
-    {/if}
 
     <div class="title sub">Serveurs Kyutai</div>
     <label class="field">

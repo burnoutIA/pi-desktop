@@ -21,7 +21,6 @@
   import { isDemo, fillDemo, demoLevels, demoWave, DEMO_FILES, DEMO_GIT, DEMO_SESSIONS } from "./lib/demo";
   import { loadViz, type VizStyle } from "./lib/viz";
   import VoiceStage from "./components/VoiceStage.svelte";
-  import DuplexPanel, { type DuplexLine } from "./components/DuplexPanel.svelte";
   import Conversation from "./components/Conversation.svelte";
   import Composer from "./components/Composer.svelte";
   import Explorer from "./components/Explorer.svelte";
@@ -52,26 +51,6 @@
   let voiceCfg = $state<VoiceConfig | null>(null);
   /** Le brouillon vient de la voix (et non du clavier) : il passera par l'agent vocal. */
   let voiceDraft = false;
-  // ---------- Conversation duplex ----------
-  let duplexLines = $state<DuplexLine[]>([]);
-  let duplexActive = $state(false);
-  let duplexMs = $state<number[]>([]);
-  let duplexP = $state<number | null>(null);
-  const duplexMedian = $derived(
-    duplexMs.length ? [...duplexMs].sort((a, b) => a - b)[Math.floor(duplexMs.length / 2)] : null,
-  );
-  /** Ajoute des mots à la dernière ligne de ce locuteur, ou ouvre une nouvelle ligne. */
-  function duplexAppend(who: "user" | "agent", words: string) {
-    const last = duplexLines[duplexLines.length - 1];
-    if (last && last.who === who && !last.cut) last.text = `${last.text} ${words}`;
-    else duplexLines.push({ who, text: words });
-  }
-  async function duplexReset() {
-    duplexLines = [];
-    duplexMs = [];
-    duplexP = null;
-    await api.duplexReset();
-  }
   let showSettings = $state(false);
   let vizStyle = $state<VizStyle>(loadViz());
   let servers = $state<ServersState>("starting");
@@ -645,11 +624,6 @@
 
   async function toggleMic() {
     cancelAuto();
-    // Duplex : le micro est toujours ouvert ; Espace sert à lui couper la parole.
-    if (voiceCfg?.duplex) {
-      if (speaking) await api.stopSpeaking();
-      return;
-    }
     if (listening) {
       await api.listen(false, true); // arrêt manuel : on envoie après les derniers mots
     } else {
@@ -813,17 +787,6 @@
         else startAuto();
       }),
       on<string[]>("fs-changed", () => scheduleRefresh()),
-      on<string>("duplex-heard", (w) => duplexAppend("user", w)),
-      on<{ heard: string; said: string; pListen: number; ms: number; cut: boolean }>("duplex-turn", (t) => {
-        duplexMs = [...duplexMs.slice(-49), t.ms];
-        duplexP = t.pListen;
-        if (t.cut) {
-          const last = [...duplexLines].reverse().find((l) => l.who === "agent");
-          if (last) last.cut = true;
-        }
-        if (t.said !== "<listen>") duplexAppend("agent", t.said);
-      }),
-      on<boolean>("duplex-active", (a) => (duplexActive = a)),
       on<{ kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
         if (e.kind === "action") {
           const asked = agentAsked;
@@ -871,7 +834,7 @@
       ];
       speaking = !dq.has("idle");
       if (dq.has("idle")) session.busy = false;
-      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "unmute-prod-website/developpeuse-3.wav", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, duplex: false, duplexUrl: "", voiceAgent: true, agentUrl: "" };
+      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "unmute-prod-website/developpeuse-3.wav", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, voiceAgent: true, agentUrl: "" };
       agent = { name: "Jarvis", filterDb: 20 };
       const q = new URLSearchParams(location.search).get("settings");
       if (q) {
@@ -1086,22 +1049,11 @@
         {agentName}
         {woke}
         handsFree={voiceCfg?.handsFree ?? false}
-        duplex={voiceCfg?.duplex ?? false}
         onMic={toggleMic}
         onStopVoice={stopVoice}
       />
       <div class="feed" class:hidden={zenActive}>
-        {#if voiceCfg?.duplex}
-          <DuplexPanel
-            lines={duplexLines}
-            active={duplexActive}
-            medianMs={duplexMedian}
-            pListen={duplexP}
-            {agentName}
-            onReset={duplexReset}
-            onExit={() => voiceCfg && updateVoice({ ...voiceCfg, duplex: false })}
-          />
-        {:else if onboarding}
+        {#if onboarding}
           <Onboarding
             step={onboarding}
             {piVersion}
@@ -1121,7 +1073,7 @@
           />
         {/if}
       </div>
-      {#if !onboarding && !zenActive && !voiceCfg?.duplex}
+      {#if !onboarding && !zenActive}
       <Composer
         bind:value={draft}
         {listening}

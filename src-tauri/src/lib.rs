@@ -84,12 +84,6 @@ fn voice_agent_reset(state: State<'_, AppState>) {
     state.voice.agent_reset();
 }
 
-/// Conversation duplex : repartir d'une conversation vide.
-#[tauri::command]
-fn voice_duplex_reset(state: State<'_, AppState>) {
-    state.voice.duplex_reset();
-}
-
 #[tauri::command]
 fn voice_get_config(state: State<'_, AppState>) -> VoiceConfig {
     state.voice.config()
@@ -327,7 +321,6 @@ pub fn run() {
             voice_listen,
             voice_stop_speaking,
             voice_speak,
-            voice_duplex_reset,
             voice_agent_ask,
             voice_agent_reset,
             voice_get_config,

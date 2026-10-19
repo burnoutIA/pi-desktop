@@ -19,7 +19,6 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
 
 mod agent;
-mod duplex;
 
 /// 80 ms à 24 kHz : la taille de trame attendue par le STT.
 const STT_CHUNK: usize = 1920;
@@ -81,12 +80,6 @@ pub struct VoiceConfig {
     /// Mains libres : répondre « Oui ? » quand tu marques une pause après le nom.
     #[serde(default = "default_true")]
     pub ack_on_pause: bool,
-    /// Conversation duplex (expérimental) : un LLM local décide toutes les 0,6 s de parler ou
-    /// d'écouter, le micro reste ouvert pendant qu'il parle. Rien n'est envoyé à pi.
-    #[serde(default)]
-    pub duplex: bool,
-    #[serde(default = "default_duplex_url")]
-    pub duplex_url: String,
     /// Agent vocal : ce que tu dis passe d'abord par lui ; il répond tout de suite et transmet
     /// à pi ce qui est à faire, même pendant que pi travaille.
     #[serde(default)]
@@ -98,10 +91,6 @@ pub struct VoiceConfig {
 
 fn default_agent_url() -> String {
     "http://127.0.0.1:4747/v1".into()
-}
-
-fn default_duplex_url() -> String {
-    "http://127.0.0.1:18093".into()
 }
 
 fn default_true() -> bool {
@@ -130,8 +119,6 @@ impl Default for VoiceConfig {
             wake_word: default_wake_word(),
             filter_db: default_filter_db(),
             ack_on_pause: true,
-            duplex: false,
-            duplex_url: default_duplex_url(),
             voice_agent: false,
             agent_url: default_agent_url(),
         }
@@ -238,8 +225,6 @@ pub struct VoiceEngine {
     last_ack: AtomicU64,
     /// Les sessions TTS d'identifiant <= à celui-ci sont coupées (voix interrompue).
     tts_cut: AtomicU64,
-    duplex_on: AtomicBool,
-    duplex: Mutex<duplex::DuplexState>,
     agent: Mutex<agent::AgentState>,
     /// Réponse de l'agent vocal en cours ; changé à chaque coupure de la voix.
     agent_gen: AtomicU64,
@@ -388,8 +373,6 @@ impl VoiceEngine {
             acks_loading: AtomicBool::new(false),
             last_ack: AtomicU64::new(u64::MAX),
             tts_cut: AtomicU64::new(0),
-            duplex_on: AtomicBool::new(false),
-            duplex: Mutex::new(duplex::DuplexState::default()),
             agent: Mutex::new(agent::AgentState::default()),
             agent_gen: AtomicU64::new(0),
         })
@@ -400,7 +383,6 @@ impl VoiceEngine {
     }
 
     pub fn set_config(&self, c: VoiceConfig) {
-        self.duplex_on.store(c.duplex, Ordering::SeqCst);
         *self.config.lock().unwrap() = c;
     }
 
@@ -437,8 +419,6 @@ impl VoiceEngine {
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move { me.levels_loop().await });
-        let me = self.clone();
-        tauri::async_runtime::spawn(async move { me.duplex_loop().await });
     }
 
     // ---------- Écoute ----------
@@ -477,7 +457,7 @@ impl VoiceEngine {
     }
 
     fn accepting_words(&self, t: &TurnState) -> bool {
-        t.listening || self.duplex_on() || t.flush_until.is_some_and(|u| Instant::now() < u)
+        t.listening || t.flush_until.is_some_and(|u| Instant::now() < u)
     }
 
     fn on_stt_word(self: &Arc<Self>, text: String, start_time: f64) {
@@ -504,12 +484,6 @@ impl VoiceEngine {
             let ack_echo = t.ack_words.contains(&n) && t.ack_until.is_some_and(|u| now < u + ECHO_TAIL);
             if (echo_active && is_echo(&echo_set, &n)) || ack_echo {
                 crate::applog!("écho ignoré : {text}");
-                return;
-            }
-            if self.duplex_on() {
-                // Conversation duplex : les mots vont au prochain micro-tour, même pendant sa voix.
-                drop(t);
-                self.duplex_heard(vec![text]);
                 return;
             }
             if speaking && !t.wake_turn {
@@ -973,10 +947,6 @@ impl VoiceEngine {
                 }
                 if failed || reader.inner().is_finished() {
                     crate::applog!("STT : connexion perdue");
-                    break;
-                }
-                if self.duplex_on() && opened.elapsed() > duplex::STT_MAX_SESSION {
-                    crate::applog!("STT : session duplex renouvelée");
                     break;
                 }
                 if self.wants_stt() {
