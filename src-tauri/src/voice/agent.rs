@@ -34,18 +34,33 @@ enum AgentEvent {
 
 fn system_prompt(name: &str) -> String {
     format!(
-        "Tu es {name}, la voix d'un assistant de développement. L'utilisateur te parle à voix haute pendant \
-         qu'un agent de code, pi, travaille sur son projet. Ta réponse est lue à voix haute.\n\n\
-         Commence TOUJOURS par une seule ligne d'action, puis ta réponse orale sur la ligne suivante :\n\
-         [TRANSMETTRE] <consigne pour pi> — quand l'utilisateur veut que quelque chose soit fait sur le projet \
-         (coder, corriger, modifier, lancer, chercher dans le code, ajouter une contrainte au travail en cours). \
-         La consigne reprend fidèlement ses mots, complétée seulement par ce qui a été dit avant quand c'est \
-         nécessaire pour la comprendre. N'ajoute aucune exigence ni aucun détail qu'il n'a pas demandé.\n\
-         [ARRETER] — quand il veut arrêter, annuler ou interrompre le travail de pi.\n\
-         [REPONDRE] — pour tout le reste : avancement, question simple, discussion, salutation.\n\n\
-         Réponse orale : une ou deux phrases courtes et naturelles, en français, sans liste, sans code, sans \
-         markdown, sans lire de chemin de fichier en entier. Si tu transmets, dis-le simplement. Pour l'avancement, \
-         base-toi uniquement sur l'état de pi fourni avec chaque message : n'invente rien."
+        "Tu es {name}, un assistant de développement à qui l'utilisateur parle à voix haute. Tu as deux \
+         facettes : cette voix, qui répond tout de suite, et ton agent de code, qui travaille sur le projet \
+         (il lit les fichiers, code, lance des commandes). Pour l'utilisateur, vous êtes un seul assistant : \
+         parle du travail de l'agent de code à la première personne (« je regarde », « je m'en occupe », \
+         « je suis en train de… »), jamais de lui à la troisième personne.\n\n\
+         Ce que dit l'utilisateur vient d'une transcription vocale : elle contient des erreurs (mots déformés, \
+         noms mal écrits, « Lanspi » pour « lance pi »). Comprends l'intention d'après le son des mots.\n\n\
+         Commence TOUJOURS par une balise d'action :\n\
+         [TRANSMETTRE] <consigne pour l'agent de code> puis retour à la ligne : dès que la réponse demande de \
+         regarder ou de toucher le projet. Faire, coder, corriger, modifier, lancer, tester, chercher, mais aussi \
+         expliquer le code, faire un bilan ou un état des lieux du projet, résumer ce qu'il contient, ou ajouter \
+         une contrainte au travail en cours. La consigne reprend fidèlement ses mots, corrigés des erreurs de \
+         transcription, complétée seulement par ce qui a été dit avant quand c'est nécessaire. N'ajoute aucune \
+         exigence. Si tu hésites, transmets.\n\
+         [ARRETER] : il veut arrêter, annuler ou interrompre le travail en cours.\n\
+         [REPONDRE] : seulement quand tu peux répondre sans regarder le projet : salutation, discussion, ou \
+         avancement du travail en cours d'après l'état fourni.\n\n\
+         Exemples :\n\
+         « fais-moi un petit bilan du projet » -> [TRANSMETTRE] Fais un petit bilan du projet.\n\
+         « lance pi, demande-lui ce que fait ce fichier » -> [TRANSMETTRE] Explique ce que fait ce fichier.\n\
+         « tu en es où ? » (travail en cours) -> [REPONDRE] Je suis en train de…\n\
+         « laisse tomber » -> [ARRETER]\n\n\
+         Après la balise, ta réponse orale : une ou deux phrases courtes et naturelles, en français, sans liste, \
+         sans code, sans markdown, sans lire de chemin de fichier en entier. Si tu transmets, dis simplement que \
+         tu t'en occupes. Ne parle jamais d'un résultat que tu n'as pas encore : l'agent de code donnera sa \
+         réponse lui-même quand il aura fini. Pour l'avancement, base-toi uniquement sur l'état fourni avec \
+         chaque message : n'invente rien."
     )
 }
 
@@ -59,35 +74,45 @@ fn api_key_for(url: &str) -> Option<String> {
     })
 }
 
-/// Lit la ligne d'action ; None tant qu'elle n'est pas complète.
+/// Lit la balise d'action en tête de réponse : (action, consigne, octet où commence le texte oral).
+/// None tant qu'on ne sait pas encore. [REPONDRE] et [ARRETER] sont connus dès leur `]` : la voix
+/// démarre aussitôt. [TRANSMETTRE] attend la fin de sa ligne (la consigne pour pi).
 fn parse_header(buf: &str, done: bool) -> Option<(String, String, usize)> {
-    let end = match buf.find('\n') {
-        Some(i) => i,
-        None if done || buf.len() > HEADER_MAX => buf.len(),
-        None => return None,
+    let lead = buf.len() - buf.trim_start().len();
+    let t = &buf[lead..];
+    let text_only = || Some(("repondre".to_string(), String::new(), lead));
+    if t.is_empty() {
+        return done.then(|| ("repondre".to_string(), String::new(), buf.len()));
+    }
+    if !t.starts_with('[') {
+        return text_only(); // pas de balise : tout est à lire
+    }
+    let Some(close) = t.find(']') else {
+        return if done || t.len() > HEADER_MAX { text_only() } else { None };
     };
-    let line = buf[..end].trim();
-    let upper = line.to_uppercase();
-    let tag = |t: &str| upper.starts_with(t);
-    let (action, instruction) = if tag("[TRANSMETTRE]") {
-        ("transmettre", line["[TRANSMETTRE]".len()..].trim().to_string())
-    } else if tag("[ARRETER]") || tag("[ARRÊTER]") {
-        ("arreter", String::new())
-    } else if tag("[REPONDRE]") || tag("[RÉPONDRE]") {
-        ("repondre", String::new())
-    } else {
-        // Pas de ligne d'action : tout est à lire.
-        return Some(("repondre".into(), String::new(), 0));
-    };
-    // Le texte oral commence après la ligne d'action (ou après la balise si tout est sur une ligne).
-    let skip = if action == "repondre" || action == "arreter" {
-        let tag_len = upper.find(']').map(|i| i + 1).unwrap_or(0);
-        let rest = line[tag_len..].trim();
-        if rest.is_empty() { (end + 1).min(buf.len()) } else { buf.find(rest).unwrap_or(end) }
-    } else {
-        (end + 1).min(buf.len())
-    };
-    Some((action.into(), instruction, skip))
+    let tag: String = t[1..close]
+        .trim()
+        .to_uppercase()
+        .chars()
+        .map(|c| match c {
+            'É' | 'È' | 'Ê' => 'E',
+            c => c,
+        })
+        .collect();
+    let after = lead + close + 1;
+    match tag.as_str() {
+        "REPONDRE" => Some(("repondre".into(), String::new(), after)),
+        "ARRETER" => Some(("arreter".into(), String::new(), after)),
+        "TRANSMETTRE" => {
+            let rest = &buf[after..];
+            match rest.find('\n') {
+                Some(i) => Some(("transmettre".into(), rest[..i].trim().to_string(), after + i + 1)),
+                None if done || rest.len() > HEADER_MAX => Some(("transmettre".into(), rest.trim().to_string(), buf.len())),
+                None => None,
+            }
+        }
+        _ => Some(("repondre".into(), String::new(), after)), // balise inconnue : on lit la suite
+    }
 }
 
 impl VoiceEngine {
@@ -232,18 +257,15 @@ mod tests {
 
     #[test]
     fn header_is_parsed() {
-        let (a, i, s) = parse_header("[TRANSMETTRE] Ajoute un export CSV\nJe lui transmets.", false).unwrap();
-        assert_eq!((a.as_str(), i.as_str()), ("transmettre", "Ajoute un export CSV"));
-        assert_eq!(&"[TRANSMETTRE] Ajoute un export CSV\nJe lui transmets."[s..], "Je lui transmets.");
-        let (a, _, s) = parse_header("[REPONDRE]\nIl en est aux tests.", false).unwrap();
-        assert_eq!(a, "repondre");
-        assert_eq!(&"[REPONDRE]\nIl en est aux tests."[s..], "Il en est aux tests.");
-        let txt = "[RÉPONDRE] Il en est aux tests.";
-        let (a, _, s) = parse_header(txt, true).unwrap();
-        assert_eq!((a.as_str(), &txt[s..]), ("repondre", "Il en est aux tests."));
-        assert_eq!(parse_header("[ARRETER]\nJ'arrête.", false).unwrap().0, "arreter");
-        assert!(parse_header("[TRANSMETTRE] pas fini", false).is_none());
-        let (a, _, s) = parse_header("Bonjour, je t'écoute.", true).unwrap();
-        assert_eq!((a.as_str(), s), ("repondre", 0));
+        let oral = |txt: &str, done: bool| parse_header(txt, done).map(|(a, i, s)| (a, i, txt[s..].trim().to_string()));
+        let o = |a: &str, i: &str, t: &str| Some((a.to_string(), i.to_string(), t.to_string()));
+        assert_eq!(oral("[TRANSMETTRE] Ajoute un export CSV\nJe lui transmets.", false), o("transmettre", "Ajoute un export CSV", "Je lui transmets."));
+        assert_eq!(oral("[TRANSMETTRE] pas fini", false), None);
+        assert_eq!(oral("[REPONDRE]\nIl en est aux tests.", false), o("repondre", "", "Il en est aux tests."));
+        // Sur une seule ligne : connu dès la balise, la voix démarre sans attendre la fin.
+        assert_eq!(oral("[RÉPONDRE] Salut ! Je", false), o("repondre", "", "Salut ! Je"));
+        assert_eq!(oral("[REPON", false), None);
+        assert_eq!(oral("[ARRETER]\nJ'arrête.", false), o("arreter", "", "J'arrête."));
+        assert_eq!(oral("Bonjour, je t'écoute.", false), o("repondre", "", "Bonjour, je t'écoute."));
     }
 }
