@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
 
+mod duplex;
+
 /// 80 ms à 24 kHz : la taille de trame attendue par le STT.
 const STT_CHUNK: usize = 1920;
 /// Son gardé avant l'ouverture d'une session : 0,5 s en push-to-talk (ne pas couper le premier
@@ -78,6 +80,16 @@ pub struct VoiceConfig {
     /// Mains libres : répondre « Oui ? » quand tu marques une pause après le nom.
     #[serde(default = "default_true")]
     pub ack_on_pause: bool,
+    /// Conversation duplex (expérimental) : un LLM local décide toutes les 0,6 s de parler ou
+    /// d'écouter, le micro reste ouvert pendant qu'il parle. Rien n'est envoyé à pi.
+    #[serde(default)]
+    pub duplex: bool,
+    #[serde(default = "default_duplex_url")]
+    pub duplex_url: String,
+}
+
+fn default_duplex_url() -> String {
+    "http://127.0.0.1:18093".into()
 }
 
 fn default_true() -> bool {
@@ -106,6 +118,8 @@ impl Default for VoiceConfig {
             wake_word: default_wake_word(),
             filter_db: default_filter_db(),
             ack_on_pause: true,
+            duplex: false,
+            duplex_url: default_duplex_url(),
         }
     }
 }
@@ -153,6 +167,8 @@ struct TtsSession {
     id: u64,
     tx: UnboundedSender<TtsOut>,
     words: HashSet<String>,
+    /// Fin de texte envoyée : le prochain mot ouvre une nouvelle session, et celle-ci finit sa lecture.
+    ended: bool,
 }
 
 #[derive(Default)]
@@ -206,6 +222,10 @@ pub struct VoiceEngine {
     acks: Mutex<(String, Vec<(String, Vec<f32>)>)>,
     acks_loading: AtomicBool,
     last_ack: AtomicU64,
+    /// Les sessions TTS d'identifiant <= à celui-ci sont coupées (voix interrompue).
+    tts_cut: AtomicU64,
+    duplex_on: AtomicBool,
+    duplex: Mutex<duplex::DuplexState>,
 }
 
 fn norm(w: &str) -> String {
@@ -287,6 +307,9 @@ impl VoiceEngine {
             acks: Mutex::new((String::new(), Vec::new())),
             acks_loading: AtomicBool::new(false),
             last_ack: AtomicU64::new(u64::MAX),
+            tts_cut: AtomicU64::new(0),
+            duplex_on: AtomicBool::new(false),
+            duplex: Mutex::new(duplex::DuplexState::default()),
         })
     }
 
@@ -295,6 +318,7 @@ impl VoiceEngine {
     }
 
     pub fn set_config(&self, c: VoiceConfig) {
+        self.duplex_on.store(c.duplex, Ordering::SeqCst);
         *self.config.lock().unwrap() = c;
     }
 
@@ -331,6 +355,8 @@ impl VoiceEngine {
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move { me.levels_loop().await });
+        let me = self.clone();
+        tauri::async_runtime::spawn(async move { me.duplex_loop().await });
     }
 
     // ---------- Écoute ----------
@@ -369,7 +395,7 @@ impl VoiceEngine {
     }
 
     fn accepting_words(&self, t: &TurnState) -> bool {
-        t.listening || t.flush_until.is_some_and(|u| Instant::now() < u)
+        t.listening || self.duplex_on() || t.flush_until.is_some_and(|u| Instant::now() < u)
     }
 
     fn on_stt_word(self: &Arc<Self>, text: String, start_time: f64) {
@@ -396,6 +422,12 @@ impl VoiceEngine {
             let ack_echo = t.ack_words.contains(&n) && t.ack_until.is_some_and(|u| now < u + ECHO_TAIL);
             if (echo_active && is_echo(&echo_set, &n)) || ack_echo {
                 crate::applog!("écho ignoré : {text}");
+                return;
+            }
+            if self.duplex_on() {
+                // Conversation duplex : les mots vont au prochain micro-tour, même pendant sa voix.
+                drop(t);
+                self.duplex_heard(vec![text]);
                 return;
             }
             if speaking && !t.wake_turn {
@@ -864,6 +896,10 @@ impl VoiceEngine {
                     crate::applog!("STT : connexion perdue");
                     break;
                 }
+                if self.duplex_on() && opened.elapsed() > duplex::STT_MAX_SESSION {
+                    crate::applog!("STT : session duplex renouvelée");
+                    break;
+                }
                 if self.wants_stt() {
                     idle_since = None;
                 } else if idle_since.get_or_insert_with(Instant::now).elapsed() > STT_TAIL {
@@ -900,6 +936,7 @@ impl VoiceEngine {
 
     /// Coupe immédiatement la voix de l'agent.
     pub fn stop_speaking(&self) {
+        self.tts_cut.store(self.tts_ids.load(Ordering::SeqCst), Ordering::SeqCst);
         let session = self.tts.lock().unwrap().take();
         self.audio.playback.lock().unwrap().clear();
         if let Some(s) = session {
@@ -915,6 +952,14 @@ impl VoiceEngine {
             return;
         }
         let mut guard = self.tts.lock().unwrap();
+        if guard.as_ref().is_some_and(|s| s.ended) {
+            // La phrase précédente finit sa lecture dans sa propre session ; ses mots restent
+            // dans le filtre anti-écho.
+            let old = guard.take().unwrap();
+            let mut t = self.turn.lock().unwrap();
+            t.echo_words = old.words;
+            t.echo_until = Some(Instant::now() + ECHO_TAIL);
+        }
         if guard.is_none() {
             *guard = Some(self.open_tts(&cfg));
         }
@@ -924,8 +969,11 @@ impl VoiceEngine {
     }
 
     fn speak_end(&self) {
-        if let Some(s) = self.tts.lock().unwrap().as_ref() {
-            let _ = s.tx.send(TtsOut::Eos);
+        if let Some(s) = self.tts.lock().unwrap().as_mut() {
+            if !s.ended {
+                let _ = s.tx.send(TtsOut::Eos);
+                s.ended = true;
+            }
         }
     }
 
@@ -967,7 +1015,7 @@ impl VoiceEngine {
                 let mut ready_tx = Some(ready_tx);
                 while let Some(Ok(msg)) = stream.next().await {
                     let Message::Binary(bytes) = msg else { continue };
-                    if !me_r.tts_is_current(id) {
+                    if me_r.tts_cut.load(Ordering::SeqCst) >= id {
                         break;
                     }
                     match rmp_serde::from_slice::<TtsMsg>(&bytes) {
@@ -1004,16 +1052,12 @@ impl VoiceEngine {
                 }
             }
             // Sortie de boucle sans Eos = session interrompue : on ferme.
-            if !me.tts_is_current(id) {
+            if me.tts_cut.load(Ordering::SeqCst) >= id {
                 let _ = sink.close().await;
                 reader.abort();
             }
         });
-        TtsSession { id, tx, words: HashSet::new() }
-    }
-
-    fn tts_is_current(&self, id: u64) -> bool {
-        self.tts.lock().unwrap().as_ref().is_some_and(|s| s.id == id)
+        TtsSession { id, tx, words: HashSet::new(), ended: false }
     }
 
     fn close_tts(&self, id: u64) {

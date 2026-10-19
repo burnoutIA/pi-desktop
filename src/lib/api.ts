@@ -11,6 +11,9 @@ export type VoiceConfig = {
   wakeWord: string;
   filterDb: number;
   ackOnPause: boolean;
+  /** Conversation duplex (expérimental) : LLM local MicroTurn, micro ouvert en continu. */
+  duplex: boolean;
+  duplexUrl: string;
 };
 
 export type GitFile = { path: string; status: GitStatusKind };
@@ -57,6 +60,7 @@ export const api = {
   listen: (on: boolean, submit = false) => invoke<void>("voice_listen", { on, submit }),
   stopSpeaking: () => invoke<void>("voice_stop_speaking"),
   speak: (text: string) => invoke<void>("voice_speak", { text }),
+  duplexReset: () => invoke<void>("voice_duplex_reset"),
   getVoiceConfig: () => invoke<VoiceConfig>("voice_get_config"),
   setVoiceConfig: (config: VoiceConfig) => invoke<void>("voice_set_config", { config }),
   sttConnected: () => invoke<boolean>("voice_stt_connected"),

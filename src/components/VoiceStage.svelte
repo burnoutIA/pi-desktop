@@ -14,6 +14,8 @@
     agentName: string;
     woke: number;
     handsFree: boolean;
+    /** Conversation duplex : micro ouvert en continu. */
+    duplex?: boolean;
     onMic: () => void;
     onStopVoice: () => void;
     /** Mode zen : la voix seule, en grand, au centre de la fenêtre. */
@@ -36,6 +38,7 @@
     agentName,
     woke,
     handsFree,
+    duplex = false,
     onMic,
     onStopVoice,
     zen = false,
@@ -50,7 +53,11 @@
       ? voiceBooting
         ? "Chargement de la voix… (~30 s)"
         : "Serveur de transcription injoignable"
-      : listening
+      : duplex
+        ? speaking
+          ? `${agentName} parle — coupe-lui la parole quand tu veux`
+          : "Conversation libre : parle quand tu veux"
+        : listening
         ? "Je t'écoute…"
         : speaking
           ? handsFree

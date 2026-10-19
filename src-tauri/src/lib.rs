@@ -73,6 +73,12 @@ fn voice_speak(state: State<'_, AppState>, text: String) {
     state.voice.speak_text(&text);
 }
 
+/// Conversation duplex : repartir d'une conversation vide.
+#[tauri::command]
+fn voice_duplex_reset(state: State<'_, AppState>) {
+    state.voice.duplex_reset();
+}
+
 #[tauri::command]
 fn voice_get_config(state: State<'_, AppState>) -> VoiceConfig {
     state.voice.config()
@@ -310,6 +316,7 @@ pub fn run() {
             voice_listen,
             voice_stop_speaking,
             voice_speak,
+            voice_duplex_reset,
             voice_get_config,
             voice_set_config,
             voice_stt_connected,
