@@ -724,7 +724,7 @@
       session.voice("user", text);
       if (STOP_WORDS.test(text)) return abort(); // « stop » : pas besoin de l'agent pour ça
       agentAsked = text;
-      await api.voiceAgentAsk(text, session.summary());
+      await api.voiceAgentAsk(text, session.summary(), modelKey);
       return;
     }
     if (!piUp) {

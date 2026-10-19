@@ -75,8 +75,8 @@ fn voice_speak(state: State<'_, AppState>, text: String) {
 
 /// Agent vocal : ce que tu viens de dire, avec l'état de pi vu par l'interface.
 #[tauri::command]
-fn voice_agent_ask(state: State<'_, AppState>, text: String, pi_state: String) {
-    state.voice.agent_ask(text, pi_state);
+fn voice_agent_ask(state: State<'_, AppState>, text: String, pi_state: String, pi_model: Option<String>) {
+    state.voice.agent_ask(text, pi_state, pi_model);
 }
 
 #[tauri::command]

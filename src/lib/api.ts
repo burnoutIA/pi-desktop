@@ -65,7 +65,8 @@ export const api = {
   stopSpeaking: () => invoke<void>("voice_stop_speaking"),
   speak: (text: string) => invoke<void>("voice_speak", { text }),
   duplexReset: () => invoke<void>("voice_duplex_reset"),
-  voiceAgentAsk: (text: string, piState: string) => invoke<void>("voice_agent_ask", { text, piState }),
+  voiceAgentAsk: (text: string, piState: string, piModel: string | null) =>
+    invoke<void>("voice_agent_ask", { text, piState, piModel }),
   voiceAgentReset: () => invoke<void>("voice_agent_reset"),
   getVoiceConfig: () => invoke<VoiceConfig>("voice_get_config"),
   setVoiceConfig: (config: VoiceConfig) => invoke<void>("voice_set_config", { config }),

@@ -64,13 +64,14 @@ fn system_prompt(name: &str) -> String {
     )
 }
 
-/// La clé du fournisseur de pi qui pointe vers `url` (aucune clé : harn sans clé, ou serveur ouvert).
-fn api_key_for(url: &str) -> Option<String> {
+/// Le fournisseur de pi qui pointe vers `url` : (son nom, sa clé). Pas de clé : harn sans clé,
+/// ou serveur ouvert.
+fn provider_for(url: &str) -> Option<(String, Option<String>)> {
     let path = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".pi/agent/models.json");
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let want = url.trim_end_matches('/');
-    v["providers"].as_object()?.values().find_map(|p| {
-        (p["baseUrl"].as_str()?.trim_end_matches('/') == want).then(|| p["apiKey"].as_str().map(str::to_string)).flatten()
+    v["providers"].as_object()?.iter().find_map(|(name, p)| {
+        (p["baseUrl"].as_str()?.trim_end_matches('/') == want).then(|| (name.clone(), p["apiKey"].as_str().map(str::to_string)))
     })
 }
 
@@ -117,12 +118,14 @@ fn parse_header(buf: &str, done: bool) -> Option<(String, String, usize)> {
 
 impl VoiceEngine {
     /// Réponse de l'agent à ce que tu viens de dire. `pi_state` : l'état de pi vu par l'interface.
-    pub fn agent_ask(self: &Arc<Self>, text: String, pi_state: String) {
+    /// `pi_model` : le modèle de pi (« fournisseur/id »). S'il passe par le même serveur que l'agent,
+    /// l'agent prend le même modèle : harn ne bascule jamais d'un modèle à l'autre au milieu d'une phrase.
+    pub fn agent_ask(self: &Arc<Self>, text: String, pi_state: String, pi_model: Option<String>) {
         self.stop_speaking(); // une nouvelle phrase coupe la précédente
         let generation = self.agent_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = me.agent_run(generation, &text, &pi_state).await {
+            if let Err(e) = me.agent_run(generation, &text, &pi_state, pi_model.as_deref()).await {
                 crate::applog!("agent vocal : {e}");
                 let _ = me.app.emit("voice-agent", AgentEvent::Error { message: e.to_string(), text });
             }
@@ -137,7 +140,7 @@ impl VoiceEngine {
         self.agent_gen.load(Ordering::SeqCst) == generation
     }
 
-    async fn agent_run(self: &Arc<Self>, generation: u64, text: &str, pi_state: &str) -> anyhow::Result<()> {
+    async fn agent_run(self: &Arc<Self>, generation: u64, text: &str, pi_state: &str, pi_model: Option<&str>) -> anyhow::Result<()> {
         let cfg = self.config();
         let name = {
             let n = cfg.wake_word.trim();
@@ -151,8 +154,8 @@ impl VoiceEngine {
         // L'état change à chaque fois : il va dans le dernier message, pour garder le reste en cache.
         messages.push(json!({ "role": "user", "content": format!("État de pi :\n{pi_state}\n\nL'utilisateur dit : {text}") }));
         let url = format!("{}/chat/completions", cfg.agent_url.trim_end_matches('/'));
-        // Pas de champ `model` : harn répond avec le modèle déjà chargé, sans en changer.
-        let body = json!({
+        let provider = provider_for(&cfg.agent_url);
+        let mut body = json!({
             "messages": messages,
             "stream": true,
             "max_tokens": 220,
@@ -160,8 +163,15 @@ impl VoiceEngine {
             "chat_template_kwargs": { "enable_thinking": false },
         });
         let client = reqwest::Client::new();
-        let mut req = client.post(&url).json(&body).timeout(Duration::from_secs(60));
-        if let Some(key) = api_key_for(&cfg.agent_url) {
+        // Même modèle que pi s'il passe par ce serveur. Sinon pas de champ `model` : harn répond
+        // avec le modèle déjà chargé, sans en changer.
+        if let (Some((name, _)), Some((p, id))) = (&provider, pi_model.and_then(|m| m.split_once('/'))) {
+            if name == p {
+                body["model"] = json!(id);
+            }
+        }
+        let mut req = client.post(&url).json(&body).timeout(Duration::from_secs(90));
+        if let Some((_, Some(key))) = &provider {
             req = req.bearer_auth(key);
         }
         let t0 = Instant::now();
