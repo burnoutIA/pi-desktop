@@ -50,6 +50,8 @@
   let listening = $state(false);
   let sttUp = $state(false);
   let voiceCfg = $state<VoiceConfig | null>(null);
+  /** Le brouillon vient de la voix (et non du clavier) : il passera par l'agent vocal. */
+  let voiceDraft = false;
   // ---------- Conversation duplex ----------
   let duplexLines = $state<DuplexLine[]>([]);
   let duplexActive = $state(false);
@@ -681,10 +683,50 @@
 
   // ---------- Envoi à pi ----------
 
+  /** Envoie un texte à pi : consigne en cours de route s'il travaille, nouvelle demande sinon. */
+  async function sendToPi(text: string) {
+    if (!piUp) return toast("pi n'est pas démarré : ouvre un projet d'abord.");
+    try {
+      if (session.busy) await api.piSend({ type: "prompt", message: text, streamingBehavior: "steer" });
+      else {
+        const r = await api.piSend({ type: "prompt", message: text });
+        if (r && r.success === false) toast(r.error ?? "pi a refusé la demande");
+      }
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  /** Arrête pi sans couper la voix (l'agent vocal est peut-être en train de le dire). */
+  async function stopPi() {
+    try {
+      await api.piSend({ type: "clear_queue" });
+      await api.piSend({ type: "abort" });
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  /** Dernière phrase dictée envoyée à l'agent vocal (repli vers pi s'il ne répond pas). */
+  let agentAsked = "";
+  /** Action de la réponse en cours de l'agent vocal, affichée avec sa réponse. */
+  let pendingAction: string | null = null;
+
   async function send() {
     cancelAuto();
     const text = draft.trim();
     if (!text && !attachments.length) return;
+    const fromVoice = voiceDraft;
+    voiceDraft = false;
+    if (fromVoice && voiceCfg?.voiceAgent && !attachments.length && !text.startsWith("/")) {
+      draft = "";
+      if (listening) await api.listen(false, false);
+      session.voice("user", text);
+      if (STOP_WORDS.test(text)) return abort(); // « stop » : pas besoin de l'agent pour ça
+      agentAsked = text;
+      await api.voiceAgentAsk(text, session.summary());
+      return;
+    }
     if (!piUp) {
       toast("pi n'est pas démarré : ouvre un projet d'abord.");
       return;
@@ -762,6 +804,7 @@
       }),
       on<string>("stt-word", (w) => {
         cancelAuto();
+        voiceDraft = true;
         draft = draft && !/\s$/.test(draft) ? `${draft} ${w}` : draft + w;
       }),
       on<{ reason: string }>("stt-turn-end", ({ reason }) => {
@@ -781,6 +824,20 @@
         if (t.said !== "<listen>") duplexAppend("agent", t.said);
       }),
       on<boolean>("duplex-active", (a) => (duplexActive = a)),
+      on<{ kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
+        if (e.kind === "action") {
+          const asked = agentAsked;
+          if (e.action === "transmettre") sendToPi(e.instruction || asked);
+          else if (e.action === "arreter") stopPi();
+          if (e.action !== "repondre") pendingAction = e.action ?? null;
+        } else if (e.kind === "reply") {
+          if (e.text) session.voice("agent", e.text, pendingAction ?? undefined);
+          pendingAction = null;
+        } else if (e.kind === "error") {
+          toast(`Agent vocal injoignable (${e.message}) : demande envoyée directement à pi.`);
+          if (e.text) sendToPi(e.text);
+        }
+      }),
     ];
 
     if (isDemo()) {
@@ -814,7 +871,7 @@
       ];
       speaking = !dq.has("idle");
       if (dq.has("idle")) session.busy = false;
-      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "unmute-prod-website/developpeuse-3.wav", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, duplex: false, duplexUrl: "" };
+      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "unmute-prod-website/developpeuse-3.wav", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, duplex: false, duplexUrl: "", voiceAgent: true, agentUrl: "" };
       agent = { name: "Jarvis", filterDb: 20 };
       const q = new URLSearchParams(location.search).get("settings");
       if (q) {

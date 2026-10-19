@@ -296,6 +296,21 @@
     </label>
 
     <label class="toggle">
+      <input type="checkbox" checked={config.voiceAgent} onchange={(e) => set("voiceAgent", (e.target as HTMLInputElement).checked)} />
+      <span
+        ><b>Agent vocal</b><small
+          >ce que tu dis passe d'abord par lui : il répond tout de suite, même quand pi travaille, et transmet à pi ce
+          qui est à faire. Le clavier va toujours directement à pi.</small
+        ></span
+      >
+    </label>
+    {#if config.voiceAgent}
+      <label class="field">
+        <span>Serveur de l'agent vocal (compatible OpenAI, harn par défaut)</span>
+        <input value={config.agentUrl} onchange={(e) => set("agentUrl", (e.target as HTMLInputElement).value)} />
+      </label>
+    {/if}
+    <label class="toggle">
       <input type="checkbox" checked={config.duplex} onchange={(e) => set("duplex", (e.target as HTMLInputElement).checked)} />
       <span
         ><b>Conversation duplex (expérimental)</b><small

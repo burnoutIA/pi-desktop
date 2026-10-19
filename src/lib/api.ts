@@ -14,6 +14,10 @@ export type VoiceConfig = {
   /** Conversation duplex (expérimental) : LLM local MicroTurn, micro ouvert en continu. */
   duplex: boolean;
   duplexUrl: string;
+  /** Agent vocal : répond tout de suite et transmet à pi ce qui est à faire, même quand pi travaille. */
+  voiceAgent: boolean;
+  /** Serveur compatible OpenAI de l'agent vocal (harn par défaut). */
+  agentUrl: string;
 };
 
 export type GitFile = { path: string; status: GitStatusKind };
@@ -61,6 +65,8 @@ export const api = {
   stopSpeaking: () => invoke<void>("voice_stop_speaking"),
   speak: (text: string) => invoke<void>("voice_speak", { text }),
   duplexReset: () => invoke<void>("voice_duplex_reset"),
+  voiceAgentAsk: (text: string, piState: string) => invoke<void>("voice_agent_ask", { text, piState }),
+  voiceAgentReset: () => invoke<void>("voice_agent_reset"),
   getVoiceConfig: () => invoke<VoiceConfig>("voice_get_config"),
   setVoiceConfig: (config: VoiceConfig) => invoke<void>("voice_set_config", { config }),
   sttConnected: () => invoke<boolean>("voice_stt_connected"),

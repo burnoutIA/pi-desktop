@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
 
+mod agent;
 mod duplex;
 
 /// 80 ms à 24 kHz : la taille de trame attendue par le STT.
@@ -86,6 +87,17 @@ pub struct VoiceConfig {
     pub duplex: bool,
     #[serde(default = "default_duplex_url")]
     pub duplex_url: String,
+    /// Agent vocal : ce que tu dis passe d'abord par lui ; il répond tout de suite et transmet
+    /// à pi ce qui est à faire, même pendant que pi travaille.
+    #[serde(default)]
+    pub voice_agent: bool,
+    /// Serveur compatible OpenAI de l'agent vocal (harn : modèle déjà chargé, deuxième slot).
+    #[serde(default = "default_agent_url")]
+    pub agent_url: String,
+}
+
+fn default_agent_url() -> String {
+    "http://127.0.0.1:4747/v1".into()
 }
 
 fn default_duplex_url() -> String {
@@ -120,6 +132,8 @@ impl Default for VoiceConfig {
             ack_on_pause: true,
             duplex: false,
             duplex_url: default_duplex_url(),
+            voice_agent: false,
+            agent_url: default_agent_url(),
         }
     }
 }
@@ -226,6 +240,9 @@ pub struct VoiceEngine {
     tts_cut: AtomicU64,
     duplex_on: AtomicBool,
     duplex: Mutex<duplex::DuplexState>,
+    agent: Mutex<agent::AgentState>,
+    /// Réponse de l'agent vocal en cours ; changé à chaque coupure de la voix.
+    agent_gen: AtomicU64,
 }
 
 fn norm(w: &str) -> String {
@@ -373,6 +390,8 @@ impl VoiceEngine {
             tts_cut: AtomicU64::new(0),
             duplex_on: AtomicBool::new(false),
             duplex: Mutex::new(duplex::DuplexState::default()),
+            agent: Mutex::new(agent::AgentState::default()),
+            agent_gen: AtomicU64::new(0),
         })
     }
 
@@ -997,6 +1016,7 @@ impl VoiceEngine {
     /// Coupe immédiatement la voix de l'agent.
     pub fn stop_speaking(&self) {
         self.tts_cut.store(self.tts_ids.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.agent_gen.fetch_add(1, Ordering::SeqCst); // l'agent vocal arrête aussi sa réponse
         let session = self.tts.lock().unwrap().take();
         self.audio.playback.lock().unwrap().clear();
         if let Some(s) = session {

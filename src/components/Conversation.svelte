@@ -167,6 +167,15 @@
           {/if}
         </div>
       </div>
+    {:else if it.kind === "voice"}
+      <div class="row voice {it.who}">
+        <div class="voice-b selectable">
+          <span class="voice-who">{it.who === "user" ? "🎙 toi" : agentName}</span>
+          {it.text}
+          {#if it.action === "transmettre"}<span class="voice-tag">→ transmis à pi</span>{/if}
+          {#if it.action === "arreter"}<span class="voice-tag">■ pi arrêté</span>{/if}
+        </div>
+      </div>
     {:else}
       <div class="notice {it.tone}">{it.text}</div>
     {/if}
@@ -393,6 +402,28 @@
     to {
       transform: rotate(360deg);
     }
+  }
+  .row.voice.user {
+    justify-content: flex-end;
+  }
+  .voice-b {
+    max-width: 70%;
+    font-size: 13px;
+    color: var(--text-2);
+    padding: 6px 12px;
+    border-radius: 12px;
+    border: 1px dashed var(--line-2);
+    line-height: 1.45;
+  }
+  .voice-who {
+    color: var(--text-3);
+    font-size: 11px;
+    margin-right: 6px;
+  }
+  .voice-tag {
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--text-3);
   }
   .notice {
     align-self: center;

@@ -73,6 +73,17 @@ fn voice_speak(state: State<'_, AppState>, text: String) {
     state.voice.speak_text(&text);
 }
 
+/// Agent vocal : ce que tu viens de dire, avec l'état de pi vu par l'interface.
+#[tauri::command]
+fn voice_agent_ask(state: State<'_, AppState>, text: String, pi_state: String) {
+    state.voice.agent_ask(text, pi_state);
+}
+
+#[tauri::command]
+fn voice_agent_reset(state: State<'_, AppState>) {
+    state.voice.agent_reset();
+}
+
 /// Conversation duplex : repartir d'une conversation vide.
 #[tauri::command]
 fn voice_duplex_reset(state: State<'_, AppState>) {
@@ -317,6 +328,8 @@ pub fn run() {
             voice_stop_speaking,
             voice_speak,
             voice_duplex_reset,
+            voice_agent_ask,
+            voice_agent_reset,
             voice_get_config,
             voice_set_config,
             voice_stt_connected,
