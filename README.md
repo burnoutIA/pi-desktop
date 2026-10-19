@@ -15,7 +15,7 @@ Tout est open source et tourne en local. Seul le modèle de langage reste celui 
 | App de bureau | Tauri 2 (Rust) + Svelte 5 (TypeScript) | MIT / Apache-2.0 |
 | Agent | `pi --mode rpc` | MIT |
 | Transcription (STT) | Kyutai `stt-1b-en_fr` (streaming, détection de fin de phrase) | CC-BY 4.0 |
-| Synthèse (TTS) | Kyutai `tts-1.6b-en_fr` (streaming) | CC-BY 4.0 |
+| Synthèse (TTS) | Kyutai Pocket TTS (processeur, `scripts/pocket-tts-server.py`) | MIT (code), selon la voix |
 | Serveur vocal | `moshi-server` (Rust + CUDA) | MIT / Apache-2.0 |
 | Réveil par le nom | Vosk `vosk-model-small-fr-0.22` (processeur) | Apache-2.0 |
 
@@ -42,7 +42,7 @@ scripts/install-desktop.sh   # une fois : ajoute « Pi Voice » au menu des appl
 
 Ensuite, lance **Pi Voice depuis le menu** (ou épingle-la au dock). L'app :
 - démarre elle-même les serveurs vocaux s'ils ne tournent pas (prêts en ~10 s, plusieurs minutes la toute première fois, le temps de compiler et de télécharger les modèles) ;
-- les arrête quand tu la fermes, ce qui libère ~11 Go de mémoire GPU. Des serveurs que tu as lancés toi-même ne sont jamais arrêtés ;
+- les arrête quand tu la fermes, ce qui libère ~2,6 Go de mémoire GPU (la synthèse tourne sur le processeur). Des serveurs que tu as lancés toi-même ne sont jamais arrêtés ;
 - rouvre le dernier projet. `Ctrl+O` en ouvre un autre.
 
 En ligne de commande : `scripts/run.sh [dossier]`, ou `scripts/run.sh dev` en mode développement. `scripts/run.sh` nettoie les variables qu'un éditeur installé en snap (VSCodium, VS Code) transmet à son terminal : sans ça, WebKitGTK plante au démarrage. Les serveurs seuls : `scripts/voice-server.sh`. Le journal du démarrage de la voix est dans `~/.cache/pi-voice/voice-server.log`.
@@ -73,7 +73,7 @@ L'app ajoute une consigne au prompt de pi : terminer sa réponse finale par un c
 
 ## Réglages (icône en haut à droite)
 
-- Voix française : « Développeuse », « Fabien », ou des voix du dataset CML-TTS.
+- Voix : Estelle (française, par défaut) ou l'une des 26 autres voix de Pocket TTS, qui gardent le timbre de leur langue d'origine. Le bouton « Écouter » les fait entendre.
 - Modèle (ceux que ta config de pi connaît), voix, lecture vocale, mode mains libres.
 - Adresses des serveurs STT et TTS.
 
@@ -100,4 +100,4 @@ Tout l'audio passe par Rust. L'égaliseur reçoit environ 45 fois par seconde 40
 
 - **Écho.** En push-to-talk, le micro n'écoute pas pendant que pi parle. Juste après une coupure, un filtre ignore les mots que pi venait de dire.
 - **Micro.** Le flux du micro reste ouvert pour démarrer sans délai, mais ses mots ne comptent qu'après `Espace`. L'audio ne va qu'au serveur local.
-- **Voix limitées.** Le TTS Kyutai n'utilise que les voix fournies dans `kyutai/tts-voices`. Pas de clonage de voix.
+- **Voix limitées.** Pocket TTS n'utilise que les voix de son catalogue. Le clonage d'une voix demande d'accepter les conditions du modèle sur Hugging Face.

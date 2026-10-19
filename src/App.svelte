@@ -6,6 +6,7 @@
     api,
     on,
     DEFAULT_AGENT,
+    FRENCH_VOICES,
     type AgentConfig,
     type Attachment,
     type AudioLevels,
@@ -650,6 +651,8 @@
 
   async function updateVoice(c: VoiceConfig) {
     c = { ...c, wakeWord: agent.name.trim() || "pi", filterDb: agent.filterDb };
+    // Voix d'un ancien moteur (TTS Kyutai 1,6B) : remplacée par la voix française de Pocket TTS.
+    if (!FRENCH_VOICES.some((v) => v.id === c.voice)) c = { ...c, voice: "estelle" };
     voiceCfg = c;
     localStorage.setItem("voiceConfig", JSON.stringify(c));
     await api.setVoiceConfig(c);
@@ -834,7 +837,7 @@
       ];
       speaking = !dq.has("idle");
       if (dq.has("idle")) session.busy = false;
-      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "unmute-prod-website/developpeuse-3.wav", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, voiceAgent: true, agentUrl: "" };
+      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "estelle", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, voiceAgent: true, agentUrl: "" };
       agent = { name: "Jarvis", filterDb: 20 };
       const q = new URLSearchParams(location.search).get("settings");
       if (q) {

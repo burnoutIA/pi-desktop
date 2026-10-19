@@ -70,7 +70,7 @@ async def stt(url: str, audio: np.ndarray) -> str:
 async def main():
     p = argparse.ArgumentParser()
     p.add_argument("text", nargs="?", default="Bonjour ! J'ai terminé la page d'accueil et corrigé le bug du formulaire.")
-    p.add_argument("--voice", default="unmute-prod-website/developpeuse-3.wav")
+    p.add_argument("--voice", default="estelle")
     p.add_argument("--tts", default="ws://127.0.0.1:8089")
     p.add_argument("--stt", default="ws://127.0.0.1:8090")
     p.add_argument("--out", default="test-voice.wav")

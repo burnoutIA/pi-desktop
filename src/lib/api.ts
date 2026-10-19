@@ -94,14 +94,34 @@ export function on<T>(event: string, cb: (payload: T) => void): Promise<Unlisten
   return listen<T>(event, (e) => cb(e.payload));
 }
 
-/** Voix françaises : Pocket TTS (par défaut), puis celles du TTS Kyutai 1,6B (PIVOICE_TTS=kyutai). */
+/** Voix de Pocket TTS (modèle français). Estelle est la seule d'origine française ; les autres
+ * gardent le timbre de leur langue d'origine et parlent français avec le modèle français. */
 export const FRENCH_VOICES: { id: string; label: string }[] = [
-  { id: "estelle", label: "Estelle (Pocket TTS, processeur)" },
-  { id: "unmute-prod-website/developpeuse-3.wav", label: "Développeuse" },
-  { id: "unmute-prod-website/fabieng-enhanced-v2.wav", label: "Fabien" },
-  { id: "cml-tts/fr/2154_2576_000020-0003_enhanced.wav", label: "CML · voix 1" },
-  { id: "cml-tts/fr/1406_1028_000009-0003_enhanced.wav", label: "CML · voix 2" },
-  { id: "cml-tts/fr/12977_10625_000037-0001_enhanced.wav", label: "CML · voix 3" },
-  { id: "cml-tts/fr/2216_1745_000007-0001_enhanced.wav", label: "CML · voix 4" },
-  { id: "cml-tts/fr/296_1028_000022-0001_enhanced.wav", label: "CML · voix 5" },
+  { id: "estelle", label: "Estelle · française" },
+  { id: "alba", label: "Alba · timbre anglais" },
+  { id: "anna", label: "Anna · timbre anglais" },
+  { id: "azelma", label: "Azelma · timbre anglais" },
+  { id: "caro_davy", label: "Caro Davy · timbre anglais" },
+  { id: "cosette", label: "Cosette · timbre anglais" },
+  { id: "eponine", label: "Eponine · timbre anglais" },
+  { id: "eve", label: "Eve · timbre anglais" },
+  { id: "fantine", label: "Fantine · timbre anglais" },
+  { id: "jane", label: "Jane · timbre anglais" },
+  { id: "mary", label: "Mary · timbre anglais" },
+  { id: "vera", label: "Vera · timbre anglais" },
+  { id: "bill_boerst", label: "Bill Boerst · timbre anglais" },
+  { id: "charles", label: "Charles · timbre anglais" },
+  { id: "george", label: "George · timbre anglais" },
+  { id: "javert", label: "Javert · timbre anglais" },
+  { id: "jean", label: "Jean · timbre anglais" },
+  { id: "marius", label: "Marius · timbre anglais" },
+  { id: "michael", label: "Michael · timbre anglais" },
+  { id: "paul", label: "Paul · timbre anglais" },
+  { id: "peter_yearsley", label: "Peter Yearsley · timbre anglais" },
+  { id: "stuart_bell", label: "Stuart Bell · timbre anglais" },
+  { id: "lola", label: "Lola · timbre espagnol" },
+  { id: "giovanni", label: "Giovanni · timbre italien" },
+  { id: "juergen", label: "Juergen · timbre allemand" },
+  { id: "rafael", label: "Rafael · timbre portugais" },
+  { id: "daan", label: "Daan · timbre néerlandais" },
 ];
