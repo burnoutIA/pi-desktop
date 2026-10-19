@@ -257,22 +257,85 @@ fn levenshtein(a: &[char], b: &[char]) -> usize {
     prev[b.len()]
 }
 
-/// Le nom, prononcé puis transcrit approximativement (« Jarvis » -> « J'envis ») : on tolère
-/// jusqu'à 2 lettres d'écart pour un nom de 5 lettres ou plus. Renvoie la suite du texte après
-/// le nom (vide si le bloc ne contenait que lui), ou None si le nom n'y est pas.
-fn strip_name_from(text: &str, name: &str) -> Option<String> {
-    let name: Vec<char> = name.chars().collect();
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let pos = words.iter().position(|w| {
-        let n: Vec<char> = norm(w).chars().collect();
-        if n.is_empty() {
-            return false;
+/// Mots gardés au plus en attendant le nom, au début d'un réveil.
+const NAME_LOOKAHEAD: usize = 6;
+
+/// Clé de prononciation française approximative : « Jarviss » et « jarvis » donnent la même,
+/// « J'envisse » ou « leur vise » en restent proches. Sert à reconnaître le nom mal transcrit.
+fn phon(s: &str) -> String {
+    let s: String = norm(s)
+        .chars()
+        .map(|c| match c {
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'à' | 'â' | 'ä' => 'a',
+            'î' | 'ï' | 'y' => 'i',
+            'ô' | 'ö' => 'o',
+            'û' | 'ù' | 'ü' => 'u',
+            'ç' | 'z' => 's',
+            'w' => 'v',
+            'x' => 's',
+            c => c,
+        })
+        .filter(|c| *c != 'h')
+        .collect();
+    let s = s.replace("eau", "o").replace("au", "o").replace("ai", "e").replace("ei", "e").replace("ou", "u").replace("ph", "f").replace("qu", "k");
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let c = match c {
+            'c' if matches!(chars.get(i + 1), Some('e' | 'i')) => 's',
+            'c' => 'k',
+            c => c,
+        };
+        if !out.ends_with(c) {
+            out.push(c); // lettres doublées : « ss » -> « s »
         }
-        let tolerance = if name.len() >= 5 { 2 } else if name.len() >= 3 { 1 } else { 0 };
-        levenshtein(&n, &name) <= tolerance
-    })?;
-    let rest = words[pos + 1..].join(" ");
-    Some(rest.trim_start_matches(|c: char| c == ',' || c == '.' || c == '?' || c == '!' || c.is_whitespace()).to_string())
+    }
+    if out.len() > 2 && out.ends_with('e') {
+        out.pop(); // « vise » -> « vis »
+    }
+    out
+}
+
+/// Où finit le nom de l'agent parmi les premiers mots transcrits après son réveil ? Le détecteur
+/// a déjà entendu le nom : ici on le cherche, même déformé (« J'envisse », « J'ai un » + « vice »,
+/// « leur vise »), en comparant la prononciation d'un à quatre mots collés. Renvoie l'indice du
+/// premier mot qui suit le nom (ce qui le précède est retiré aussi), ou None.
+fn name_end(words: &[(String, f64)], name: &str) -> Option<usize> {
+    let key: Vec<char> = phon(name).chars().collect();
+    let tolerance = match key.len() {
+        0 => return None,
+        1..=2 => 0,
+        3..=4 => 1,
+        n => n / 2,
+    };
+    let mut best: Option<(usize, usize)> = None;
+    for i in 0..words.len().min(3) {
+        for k in 1..=4 {
+            if i + k > words.len() {
+                break;
+            }
+            let joined: String = words[i..i + k].iter().map(|(w, _)| w.as_str()).collect();
+            let cand: Vec<char> = phon(&joined).chars().collect();
+            if cand.is_empty() {
+                continue;
+            }
+            let d = levenshtein(&cand, &key);
+            if d <= tolerance && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, i + k));
+            }
+        }
+    }
+    best.map(|(_, end)| end)
+}
+
+/// Les mots qui suivent le nom, sans la ponctuation qui le suivait (« Jarvis ? pars » -> « pars »).
+fn after_name(words: Vec<(String, f64)>, end: usize) -> Vec<(String, f64)> {
+    let mut rest: Vec<(String, f64)> = words.into_iter().skip(end).skip_while(|(w, _)| norm(w).is_empty()).collect();
+    if let Some((w, _)) = rest.first_mut() {
+        *w = w.trim_start_matches(|c: char| !c.is_alphanumeric()).to_string();
+    }
+    rest
 }
 
 fn is_echo(words: &HashSet<String>, n: &str) -> bool {
@@ -436,32 +499,25 @@ impl VoiceEngine {
                 return;
             }
             if t.wake_turn && t.strip_name {
-                // On retire « (dis) Jarvis » du début : le nom a déjà servi à le réveiller. On ne le
-                // cherche que dans ce qui a été dit AVANT le réveil (le pré-roll), pour ne jamais
-                // retenir la demande elle-même si le STT a raté le nom.
-                // (L'horodatage Kyutai est ~0,5 s après le début réel du mot.)
-                let spoken_at = start_time - 0.5;
-                let wake_at = t.pre_roll as f64 / audio::MODEL_RATE as f64;
-                if spoken_at < wake_at + 0.3 {
-                    // Kyutai regroupe parfois plusieurs mots (« J'envis, c'est pour faire ») :
-                    // on retire le nom et ce qui le précède, et on garde la suite du bloc.
-                    if let Some(rest) = strip_name_from(&text, &name) {
-                        crate::applog!("nom retiré du texte : « {text} »");
-                        t.strip_name = false;
-                        t.strip_buf.clear();
-                        if rest.is_empty() {
-                            return;
-                        }
-                        to_emit.push((rest, start_time));
-                    } else {
-                        t.strip_buf.push((text, start_time));
+                // On retire « (dis) Jarvis » du début : le nom a déjà servi à le réveiller. Le
+                // détecteur se déclenche parfois au milieu du nom, et Kyutai le transcrit souvent
+                // de travers et en morceaux : on garde les premiers mots jusqu'à le retrouver.
+                t.strip_buf.extend(text.split_whitespace().map(|w| (w.to_string(), start_time)));
+                if let Some(end) = name_end(&t.strip_buf, &name) {
+                    let held = std::mem::take(&mut t.strip_buf);
+                    let removed: Vec<&str> = held[..end].iter().map(|(w, _)| w.as_str()).collect();
+                    crate::applog!("nom retiré du texte : « {} »", removed.join(" "));
+                    t.strip_name = false;
+                    to_emit = after_name(held, end);
+                    if to_emit.is_empty() {
                         return;
                     }
-                } else {
-                    // Hors du pré-roll sans avoir vu le nom : on rend ce qui était retenu.
+                } else if t.strip_buf.len() >= NAME_LOOKAHEAD {
+                    // Pas de nom dans les premiers mots : on rend tout.
                     t.strip_name = false;
                     to_emit = std::mem::take(&mut t.strip_buf);
-                    to_emit.push((text, start_time));
+                } else {
+                    return;
                 }
             } else {
                 to_emit.push((text, start_time));
@@ -755,7 +811,11 @@ impl VoiceEngine {
             // Mots retenus en attendant le nom, et plus rien depuis ~0,6 s : on les rend.
             if t.strip_name && !t.strip_buf.is_empty() && t.steps_since_word >= 8 {
                 t.strip_name = false;
-                let held = std::mem::take(&mut t.strip_buf);
+                let mut held = std::mem::take(&mut t.strip_buf);
+                if let Some(end) = name_end(&held, &norm(&self.config.lock().unwrap().wake_word)) {
+                    crate::applog!("nom retiré du texte (après une pause)");
+                    held = after_name(held, end);
+                }
                 t.words_after_wake += held.len();
                 t.speech_started = true;
                 t.steps_since_word = 0;
@@ -1224,12 +1284,25 @@ mod tests {
 
     #[test]
     fn name_is_stripped_even_when_misheard() {
-        assert_eq!(strip_name_from("Jarvis,", "jarvis").as_deref(), Some(""));
-        assert_eq!(strip_name_from("J'envis, c'est pour faire", "jarvis").as_deref(), Some("c'est pour faire"));
-        assert_eq!(strip_name_from("Dis Jarvis ? ajoute", "jarvis").as_deref(), Some("ajoute"));
-        assert_eq!(strip_name_from("Qu'est-ce que tu me conseilles", "jarvis"), None);
-        assert_eq!(strip_name_from("pi, lance les tests", "pi").as_deref(), Some("lance les tests"));
-        assert_eq!(strip_name_from("je pense que", "pi"), None);
+        let words = |s: &str| -> Vec<(String, f64)> { s.split_whitespace().map(|w| (w.to_string(), 0.0)).collect() };
+        let strip = |s: &str, name: &str| -> Option<String> {
+            let w = words(s);
+            name_end(&w, name).map(|end| after_name(w, end).into_iter().map(|(w, _)| w).collect::<Vec<_>>().join(" "))
+        };
+        assert_eq!(strip("Jarvis,", "jarvis").as_deref(), Some(""));
+        assert_eq!(strip("J'envis, c'est pour faire", "jarvis").as_deref(), Some("c'est pour faire"));
+        assert_eq!(strip("Dis Jarvis ? ajoute", "jarvis").as_deref(), Some("ajoute"));
+        // Transcriptions réelles relevées dans le journal
+        assert_eq!(strip("J'envisse. Qu'est-ce qu'on fait", "jarvis").as_deref(), Some("Qu'est-ce qu'on fait"));
+        assert_eq!(strip("J'ai un vice ? Tu penses pas", "jarvis").as_deref(), Some("Tu penses pas"));
+        assert_eq!(strip("leur vise part sur les parts sur les tests", "jarvis").as_deref(), Some("part sur les parts sur les tests"));
+        assert_eq!(strip("Jarviss? pars sur les tests", "jarvis").as_deref(), Some("pars sur les tests"));
+        // Pas de nom : rien n'est retiré
+        assert_eq!(strip("Qu'est-ce que tu me conseilles", "jarvis"), None);
+        assert_eq!(strip("Vas-y, patche-le. Après, dis-moi", "jarvis"), None);
+        assert_eq!(strip("Allez, vas-y.", "jarvis"), None);
+        assert_eq!(strip("pi, lance les tests", "pi").as_deref(), Some("lance les tests"));
+        assert_eq!(strip("je pense que", "pi"), None);
     }
 
     #[test]
