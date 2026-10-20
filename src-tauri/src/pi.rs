@@ -25,8 +25,7 @@ sans URL, sans chemin complet (dis juste le nom du fichier). N'utilise ces balis
 fn voice_prompt(name: Option<&str>) -> String {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => format!(
-            "Tu t'appelles {n}. L'utilisateur prononce ce nom pour te réveiller ou t'interrompre ; \
-             tu n'as pas besoin de le répéter. {VOICE_PROMPT}"
+            "Tu t'appelles {n} ; tu n'as pas besoin de le répéter. {VOICE_PROMPT}"
         ),
         None => VOICE_PROMPT.to_string(),
     }
