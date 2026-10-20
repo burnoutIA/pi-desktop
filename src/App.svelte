@@ -437,7 +437,6 @@
     await refreshSessions();
   }
   let demoRaf = 0;
-  let woke = $state(0); // instant du dernier réveil par le nom (animation)
 
   let agent = $state<AgentConfig>(loadAgent());
   const agentName = $derived(displayName(agent.name));
@@ -650,7 +649,9 @@
   }
 
   async function updateVoice(c: VoiceConfig) {
-    c = { ...c, wakeWord: agent.name.trim() || "pi", filterDb: agent.filterDb };
+    // Anciens réglages du mode mains libres (retiré) : on ne les renvoie plus.
+    const { handsFree, wakeUrl, wakeWord, filterDb, ackOnPause, ...rest } = c as VoiceConfig & Record<string, unknown>;
+    c = { ...rest, agentName: agent.name.trim() || "pi" } as VoiceConfig;
     // Voix d'un ancien moteur (TTS Kyutai 1,6B) : remplacée par la voix française de Pocket TTS.
     if (!FRENCH_VOICES.some((v) => v.id === c.voice)) c = { ...c, voice: "estelle" };
     voiceCfg = c;
@@ -782,10 +783,6 @@
         servers = s;
         if (s === "failed") toast("Les serveurs vocaux n'ont pas démarré : voir ~/.cache/pi-voice/voice-server.log");
       }),
-      on("voice-wake", () => {
-        cancelAuto();
-        woke = performance.now();
-      }),
       on<string>("stt-word", (w) => {
         cancelAuto();
         voiceDraft = true;
@@ -849,8 +846,8 @@
       ];
       speaking = !dq.has("idle");
       if (dq.has("idle")) session.busy = false;
-      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "estelle", ttsEnabled: true, handsFree: true, wakeUrl: "", wakeWord: "jarvis", filterDb: 20, ackOnPause: true, voiceAgent: true, agentUrl: "" };
-      agent = { name: "Jarvis", filterDb: 20 };
+      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "estelle", ttsEnabled: true, agentName: "jarvis", voiceAgent: true, agentUrl: "" };
+      agent = { name: "Jarvis" };
       const q = new URLSearchParams(location.search).get("settings");
       if (q) {
         localStorage.setItem("settingsTab", q);
@@ -1062,8 +1059,6 @@
         {sttUp}
         {voiceBooting}
         {agentName}
-        {woke}
-        handsFree={voiceCfg?.handsFree ?? false}
         onMic={toggleMic}
         onStopVoice={stopVoice}
       />
@@ -1084,7 +1079,6 @@
             onOpenFile={(p) => selectFile(relPath(p))}
             onReplay={(t) => api.speak(t)}
             {agentName}
-            handsFree={voiceCfg?.handsFree ?? false}
           />
         {/if}
       </div>
@@ -1141,7 +1135,6 @@
     {listening}
     {sttUp}
     {voiceBooting}
-    handsFree={voiceCfg?.handsFree ?? false}
     {runningTool}
     project={projectName ?? ""}
     branch={git.branch}

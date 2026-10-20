@@ -9,7 +9,6 @@
     listening: boolean;
     sttUp: boolean;
     voiceBooting: boolean;
-    handsFree: boolean;
     runningTool: string | null;
     project: string;
     branch: string | null;
@@ -56,9 +55,7 @@
     {/if}
   {/if}
   <span class="spacer"></span>
-  <button class="cell" onclick={p.onSettings} title="Mode de parole (réglages, onglet Voix)">
-    {p.handsFree ? `🎙 « ${p.agentName}, … »` : "⌨ Espace pour parler"}
-  </button>
+  <button class="cell" onclick={p.onSettings} title="Réglages de la voix">⌨ Espace pour parler</button>
   <span
     class="cell"
     title={p.sttUp ? "Voix prête" : p.voiceBooting ? "Chargement des modèles vocaux" : "Serveur de transcription injoignable"}

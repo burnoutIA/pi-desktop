@@ -6,11 +6,8 @@ export type VoiceConfig = {
   ttsUrl: string;
   voice: string;
   ttsEnabled: boolean;
-  handsFree: boolean;
-  wakeUrl: string;
-  wakeWord: string;
-  filterDb: number;
-  ackOnPause: boolean;
+  /** Nom de l'agent : l'agent vocal se présente ainsi. */
+  agentName: string;
   /** Agent vocal : répond tout de suite et transmet à pi ce qui est à faire, même quand pi travaille. */
   voiceAgent: boolean;
   /** Serveur compatible OpenAI de l'agent vocal (harn par défaut). */
@@ -24,11 +21,9 @@ export type GitStatus = { isRepo: boolean; branch: string | null; files: GitFile
 /** Réglages de l'agent (stockés côté interface). */
 export type AgentConfig = {
   name: string;
-  /** Mains libres : écart de volume toléré par rapport à ta voix au moment du nom (dB). */
-  filterDb: number;
 };
 
-export const DEFAULT_AGENT: AgentConfig = { name: "", filterDb: 20 };
+export const DEFAULT_AGENT: AgentConfig = { name: "" };
 
 /** Serveurs vocaux : déjà lancés à la main, en démarrage par l'app, prêts, ou en échec. */
 export type ServersState = "external" | "starting" | "ready" | "failed";

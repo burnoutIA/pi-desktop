@@ -147,7 +147,7 @@ impl VoiceEngine {
     async fn agent_run(self: &Arc<Self>, generation: u64, text: &str, pi_state: &str, pi_model: Option<&str>) -> anyhow::Result<()> {
         let cfg = self.config();
         let name = {
-            let n = cfg.wake_word.trim();
+            let n = cfg.agent_name.trim();
             let mut c = n.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_else(|| "Pi".into())
         };

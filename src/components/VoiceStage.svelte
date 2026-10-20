@@ -12,8 +12,6 @@
     sttUp: boolean;
     voiceBooting: boolean;
     agentName: string;
-    woke: number;
-    handsFree: boolean;
     onMic: () => void;
     onStopVoice: () => void;
     /** Mode zen : la voix seule, en grand, au centre de la fenêtre. */
@@ -34,8 +32,6 @@
     sttUp,
     voiceBooting,
     agentName,
-    woke,
-    handsFree,
     onMic,
     onStopVoice,
     zen = false,
@@ -53,9 +49,7 @@
       : listening
         ? "Je t'écoute…"
         : speaking
-          ? handsFree
-            ? `${agentName} parle — dis « ${agentName} » pour l'interrompre`
-            : `${agentName} parle — Espace pour lui couper la parole`
+          ? `${agentName} parle — Espace pour lui couper la parole`
           : busy
             ? `${agentName} travaille…`
             : "",
@@ -63,9 +57,6 @@
   const ring = $derived(listening ? Math.min(1, inRms * 14) : 0);
 </script>
 
-{#key woke}
-  <div class="wake-flash" class:on={woke > 0}></div>
-{/key}
 <div class="stage" class:zen class:wave={vizStyle === "wave"} class:speaking class:listening class:idle={!zen && !speaking && !listening && !busy && sttUp}>
   <div class="glow"></div>
   <div class="eq-wrap">
@@ -106,7 +97,7 @@
       </button>
     {/if}
   </div>
-  <div class="label" class:warn={!sttUp && !voiceBooting}>{label || (zen ? (handsFree ? `Dis « ${agentName}, … »` : "Espace pour parler") : "")}</div>
+  <div class="label" class:warn={!sttUp && !voiceBooting}>{label || (zen ? "Espace pour parler" : "")}</div>
   {#if zen}
     {#key listening}
       <div class="subtitle" class:user={listening}>{subtitle}</div>
@@ -115,25 +106,6 @@
 </div>
 
 <style>
-  .wake-flash {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 5;
-  }
-  .wake-flash.on {
-    animation: wake 0.9s ease-out;
-    box-shadow: inset 0 0 0 2px var(--user-2), inset 0 0 60px var(--user-line);
-    opacity: 0;
-  }
-  @keyframes wake {
-    0% {
-      opacity: 1;
-    }
-    100% {
-      opacity: 0;
-    }
-  }
   /* ---------- Mode zen ---------- */
   .stage.zen {
     isolation: isolate;

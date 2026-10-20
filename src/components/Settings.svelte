@@ -115,7 +115,7 @@
         placeholder="pi"
         onchange={(e) => setAgent("name", (e.target as HTMLInputElement).value.trim())}
       />
-      <small>En mains libres : « {agent.name || "pi"}, ta demande ». Le dire pendant qu'il parle le coupe.</small>
+      <small>L'agent vocal se présente sous ce nom.</small>
     </label>
 
     {#if models.length}
@@ -166,37 +166,6 @@
       {/if}
     </div>
 
-    <div class="title sub">
-      Mains libres
-      {#if !config.handsFree}<span class="off">— inactif (à activer dans l'onglet Voix)</span>{/if}
-    </div>
-    <label class="toggle">
-      <input
-        type="checkbox"
-        checked={config.ackOnPause ?? true}
-        onchange={(e) => set("ackOnPause", (e.target as HTMLInputElement).checked)}
-      />
-      <span
-        ><b>Répondre « Oui ? » après une pause</b><small
-          >Si tu dis juste « {agent.name || "pi"} ? » puis t'arrêtes. Pas de réponse si tu enchaînes ta demande.</small
-        ></span
-      >
-    </label>
-    <label class="field">
-      <div class="row">
-        <span>Filtre des voix lointaines</span>
-        <b class="val">−{agent.filterDb} dB</b>
-      </div>
-      <input
-        type="range"
-        min="8"
-        max="30"
-        step="1"
-        value={agent.filterDb}
-        oninput={(e) => setAgent("filterDb", +(e.target as HTMLInputElement).value)}
-      />
-      <small>Les mots plus faibles que ta voix (mesurée quand tu dis le nom) de cet écart sont ignorés. Plus bas = plus strict.</small>
-    </label>
   {:else if tab === "look"}
     <div class="field">
       <span>Mode</span>
@@ -290,10 +259,6 @@
       <input type="checkbox" checked={config.ttsEnabled} onchange={(e) => set("ttsEnabled", (e.target as HTMLInputElement).checked)} />
       <span><b>Lecture vocale</b><small>lit son résumé à la fin de chaque réponse</small></span>
     </label>
-    <label class="toggle">
-      <input type="checkbox" checked={config.handsFree} onchange={(e) => set("handsFree", (e.target as HTMLInputElement).checked)} />
-      <span><b>Mains libres</b><small>« {agent.name || "pi"}, ta demande » au lieu d'Espace. Une pause après le nom : il répond « Oui ? ».</small></span>
-    </label>
 
     <label class="toggle">
       <input type="checkbox" checked={config.voiceAgent} onchange={(e) => set("voiceAgent", (e.target as HTMLInputElement).checked)} />
@@ -371,11 +336,6 @@
     color: var(--text-3);
     font-weight: 600;
   }
-  .off {
-    text-transform: none;
-    letter-spacing: 0;
-    font-weight: 400;
-  }
   .title.sub {
     margin-top: 4px;
     padding-top: 12px;
@@ -398,11 +358,6 @@
     justify-content: space-between;
     gap: 10px;
   }
-  .val {
-    font-weight: 600;
-    color: var(--text);
-    font-size: 12px;
-  }
   .voice-row {
     display: flex;
     gap: 8px;
@@ -422,9 +377,6 @@
   textarea:focus,
   select:focus {
     border-color: var(--agent-1);
-  }
-  input[type="range"] {
-    accent-color: var(--agent-1);
   }
   .prompt {
     min-height: 170px;

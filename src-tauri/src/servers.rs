@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-const PORTS: [(u16, &str); 3] = [(8090, "transcription"), (8089, "synthèse"), (8091, "réveil")];
+const PORTS: [(u16, &str); 2] = [(8090, "transcription"), (8089, "synthèse")];
 /// Premier chargement des modèles : ~30 s d'habitude, beaucoup plus la toute première fois.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(600);
 

@@ -10,10 +10,9 @@
     onOpenFile: (path: string) => void;
     onReplay: (text: string) => void;
     agentName: string;
-    handsFree: boolean;
     onOpenProject: () => void;
   };
-  let { session, root, onOpenFile, onReplay, agentName, handsFree, onOpenProject }: Props = $props();
+  let { session, root, onOpenFile, onReplay, agentName, onOpenProject }: Props = $props();
 
   let scroller: HTMLDivElement;
   let stick = true;
@@ -93,8 +92,6 @@
         {#if !root}
           {agentName} travaille dans un dossier de ton choix.
           <button class="open-project" onclick={onOpenProject}>Choisir un dossier <kbd>Ctrl+O</kbd></button>
-        {:else if handsFree}
-          Dis « {agentName}, … » suivi de ta demande, ou appuie sur <kbd>Espace</kbd>.
         {:else}
           Appuie sur <kbd>Espace</kbd> (ou clique sur le micro), dis ce que tu veux, corrige le texte si besoin.
         {/if}
