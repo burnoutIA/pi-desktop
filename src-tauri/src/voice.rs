@@ -28,6 +28,11 @@ const PRE_ROLL_PTT: usize = 12_000;
 const PRE_ROLL_WAKE: usize = 48_000;
 /// Après la fin de l'écoute, on continue d'envoyer le micro le temps que le STT rende ses derniers mots.
 const STT_TAIL: Duration = Duration::from_millis(1200);
+/// Fin de dictée (Espace relâché) : on attend que le STT ait traité au moins FLUSH_MIN_STEPS pas
+/// de 80 ms après l'arrêt (son retard de ~0,5 s compris), sans mot depuis FLUSH_QUIET_STEPS pas.
+/// Avec un délai fixe de 0,9 s, les derniers mots (rendus jusqu'à 1,4 s après) étaient perdus.
+const FLUSH_MIN_STEPS: u32 = 10;
+const FLUSH_QUIET_STEPS: u32 = 6;
 /// Tête du VAD sémantique : 0 = 0,5 s, 1 = 1 s, 2 = 2 s, 3 = 3 s de pause prédite.
 const PAUSE_HEAD: usize = 2;
 const PAUSE_THRESHOLD: f32 = 0.6;
@@ -35,7 +40,7 @@ const PAUSE_THRESHOLD: f32 = 0.6;
 /// Sans ça, une simple hésitation (« tu me conseilles comme… micro-cravate ») coupait la phrase.
 const END_SILENCE_STEPS: u32 = 20;
 /// Temps laissé au STT (0,5 s de retard) pour finir les derniers mots après un arrêt manuel.
-const MANUAL_FLUSH: Duration = Duration::from_millis(900);
+const MANUAL_FLUSH: Duration = Duration::from_millis(3000);
 /// Après la fin de la voix de pi, le STT (0,5 s de retard) peut encore rendre son écho.
 const ECHO_TAIL: Duration = Duration::from_millis(2500);
 /// Mains libres : si ta voix s'arrête juste après le nom, on répond « Oui ? » et on attend.
@@ -201,6 +206,9 @@ struct TurnState {
     ack_words: HashSet<String>,
     /// Après un arrêt manuel, on accepte encore les derniers mots pendant un court instant.
     flush_until: Option<Instant>,
+    /// Fin de dictée en attente des derniers mots du STT, et pas STT reçus depuis l'arrêt.
+    flush_pending: bool,
+    flush_steps: u32,
 }
 
 #[derive(Default)]
@@ -433,19 +441,26 @@ impl VoiceEngine {
                 t.wake_turn = false;
                 t.strip_name = false;
                 t.pre_roll = PRE_ROLL_PTT;
+                t.flush_pending = false;
             } else {
                 t.listening = false;
                 t.wake_turn = false;
                 t.flush_until = submit.then(|| Instant::now() + MANUAL_FLUSH);
+                t.flush_pending = submit;
+                t.flush_steps = 0;
             }
         }
         self.emit_listening();
         if !on && submit {
-            // On laisse arriver les derniers mots avant d'envoyer.
+            // On laisse arriver les derniers mots avant d'envoyer : on_stt_step envoie dès que le STT
+            // a fini ; ceci n'est qu'un filet si le STT ne répond plus.
             let me = self.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(MANUAL_FLUSH).await;
-                let _ = me.app.emit("stt-turn-end", json!({ "reason": "manual" }));
+                if std::mem::take(&mut me.turn.lock().unwrap().flush_pending) {
+                    crate::applog!("fin de dictée (délai maximal)");
+                    let _ = me.app.emit("stt-turn-end", json!({ "reason": "manual" }));
+                }
             });
         }
     }
@@ -796,6 +811,23 @@ impl VoiceEngine {
     }
 
     fn on_stt_step(&self, prs: &[f32]) {
+        let flushed = {
+            let mut t = self.turn.lock().unwrap();
+            if t.flush_pending {
+                t.flush_steps += 1;
+                let done = t.flush_steps >= FLUSH_MIN_STEPS && t.steps_since_word >= FLUSH_QUIET_STEPS;
+                if done {
+                    t.flush_pending = false;
+                }
+                done
+            } else {
+                false
+            }
+        };
+        if flushed {
+            crate::applog!("fin de dictée : derniers mots reçus");
+            let _ = self.app.emit("stt-turn-end", json!({ "reason": "manual" }));
+        }
         let Some(&p) = prs.get(PAUSE_HEAD) else { return };
         let ended = {
             let mut t = self.turn.lock().unwrap();

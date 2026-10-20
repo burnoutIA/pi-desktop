@@ -686,6 +686,9 @@
 
   /** Dernière phrase dictée envoyée à l'agent vocal (repli vers pi s'il ne répond pas). */
   let agentAsked = "";
+  /** Réponse de l'agent vocal attendue (pas encore d'action reçue). */
+  let agentPending = false;
+  const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
   /** Action de la réponse en cours de l'agent vocal, affichée avec sa réponse. */
   let pendingAction: string | null = null;
 
@@ -700,8 +703,12 @@
       if (listening) await api.listen(false, false);
       session.voice("user", text);
       if (STOP_WORDS.test(text)) return abort(); // « stop » : pas besoin de l'agent pour ça
-      agentAsked = text;
-      await api.voiceAgentAsk(text, session.summary(), modelKey);
+      // L'agent n'a pas encore décidé quoi faire de la phrase précédente : on les envoie ensemble,
+      // au lieu de perdre la première.
+      const ask = agentPending && agentAsked ? `${agentAsked} ${text}` : text;
+      agentAsked = ask;
+      agentPending = true;
+      await api.voiceAgentAsk(ask, session.summary(), modelKey);
       return;
     }
     if (!piUp) {
@@ -792,14 +799,19 @@
       on<string[]>("fs-changed", () => scheduleRefresh()),
       on<{ kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
         if (e.kind === "action") {
+          agentPending = false;
           const asked = agentAsked;
-          if (e.action === "transmettre") sendToPi(e.instruction || asked);
+          let instruction = e.instruction || asked;
+          // Consigne bien plus longue que ce que tu as dit : l'agent a brodé, on envoie tes mots.
+          if (wordCount(instruction) > Math.max(2 * wordCount(asked), wordCount(asked) + 12)) instruction = asked;
+          if (e.action === "transmettre") sendToPi(instruction);
           else if (e.action === "arreter") stopPi();
           if (e.action !== "repondre") pendingAction = e.action ?? null;
         } else if (e.kind === "reply") {
           if (e.text) session.voice("agent", e.text, pendingAction ?? undefined);
           pendingAction = null;
         } else if (e.kind === "error") {
+          agentPending = false;
           toast(`Agent vocal injoignable (${e.message}) : demande envoyée directement à pi.`);
           if (e.text) sendToPi(e.text);
         }

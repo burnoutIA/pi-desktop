@@ -13,6 +13,9 @@ use super::*;
 
 /// Échanges gardés en mémoire (une question + une réponse = 2).
 const HISTORY_MAX: usize = 16;
+/// Slot du moteur réservé à l'agent (llama-server derrière harn) : il ne prend jamais celui de
+/// pi, qui garde tout son contexte en mémoire au lieu de le relire (60 à 150 s mesurées).
+const AGENT_SLOT: u32 = 1;
 /// Au-delà, la ligne d'action est jugée absente : tout le texte est lu.
 const HEADER_MAX: usize = 400;
 
@@ -46,8 +49,9 @@ fn system_prompt(name: &str) -> String {
          regarder ou de toucher le projet. Faire, coder, corriger, modifier, lancer, tester, chercher, mais aussi \
          expliquer le code, faire un bilan ou un état des lieux du projet, résumer ce qu'il contient, ou ajouter \
          une contrainte au travail en cours. La consigne reprend fidèlement ses mots, corrigés des erreurs de \
-         transcription, complétée seulement par ce qui a été dit avant quand c'est nécessaire. N'ajoute aucune \
-         exigence. Si tu hésites, transmets.\n\
+         transcription, complétée seulement par ce qui a été dit avant quand c'est nécessaire. Une phrase \
+         courte. N'ajoute aucune exigence, fonctionnalité ou détail technique qu'il n'a pas dit. Si tu \
+         hésites, transmets.\n\
          [ARRETER] : il veut arrêter, annuler ou interrompre le travail en cours.\n\
          [REPONDRE] : seulement quand tu peux répondre sans regarder le projet : salutation, discussion, ou \
          avancement du travail en cours d'après l'état fourni.\n\n\
@@ -163,6 +167,9 @@ impl VoiceEngine {
             "chat_template_kwargs": { "enable_thinking": false },
         });
         let client = reqwest::Client::new();
+        if ["//127.0.0.1", "//localhost", "//[::1]"].iter().any(|h| cfg.agent_url.contains(h)) {
+            body["id_slot"] = json!(AGENT_SLOT);
+        }
         // Même modèle que pi s'il passe par ce serveur. Sinon pas de champ `model` : harn répond
         // avec le modèle déjà chargé, sans en changer.
         if let (Some((name, _)), Some((p, id))) = (&provider, pi_model.and_then(|m| m.split_once('/'))) {
