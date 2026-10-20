@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Assistant de démarrage : installer pi, puis le connecter à un fournisseur d'IA. Les deux
-  // étapes utilisent les outils officiels de pi (installeur, `/login`) dans le terminal intégré.
+  // Assistant de démarrage : installer le pi de l'app (runtime/pi), puis le connecter à un
+  // fournisseur d'IA (`/login`). Les deux étapes tournent dans le terminal intégré.
   import { onMount } from "svelte";
   import { api } from "../lib/api";
   import Terminal from "./Terminal.svelte";
@@ -51,8 +51,8 @@
             {#if step === "login"}
               Installé{piVersion ? ` (version ${piVersion})` : ""}.
             {:else}
-              Avec l'installeur officiel de pi. Il peut demander ton mot de passe pour installer <code>curl</code>,
-              et te poser une ou deux questions : réponds dans le terminal ci-dessous.
+              Pi Voice installe sa propre copie de pi avec npm, sans toucher à un pi déjà installé sur ta
+              machine. Il faut Node.js 22 ou plus.
             {/if}
           </div>
         </div>
@@ -174,10 +174,6 @@
   .st-desc {
     font-size: 13px;
     color: var(--text-2);
-  }
-  .st-desc code {
-    font-family: var(--mono);
-    font-size: 0.9em;
   }
   .term-wrap {
     height: 380px;

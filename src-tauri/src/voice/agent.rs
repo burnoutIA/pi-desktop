@@ -7,7 +7,7 @@
 //! puis sa réponse orale, lue mot par mot dès qu'elle arrive. L'interface exécute l'action.
 //!
 //! La clé d'API n'est jamais copiée : elle est lue dans la configuration de pi
-//! (~/.pi/agent/models.json, fournisseur dont `baseUrl` correspond à l'adresse de l'agent).
+//! (models.json du dossier de config de pi, `data/pi-agent`, fournisseur dont `baseUrl` correspond à l'adresse de l'agent).
 
 use super::*;
 
@@ -76,7 +76,7 @@ fn system_prompt(name: &str) -> String {
 /// Le fournisseur de pi qui pointe vers `url` : (son nom, sa clé). Pas de clé : harn sans clé,
 /// ou serveur ouvert.
 fn provider_for(url: &str) -> Option<(String, Option<String>)> {
-    let path = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".pi/agent/models.json");
+    let path = crate::pi::agent_dir().join("models.json");
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let want = url.trim_end_matches('/');
     v["providers"].as_object()?.iter().find_map(|(name, p)| {

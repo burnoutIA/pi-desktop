@@ -48,7 +48,7 @@
         </div>
       {/if}
       <div class="tree">
-        <FileTree {files} {status} {touched} {selected} {onSelect} onlyChanged={tab === "changes"} />
+        <FileTree {root} {files} {status} {touched} {selected} {onSelect} onlyChanged={tab === "changes"} />
       </div>
     {/if}
   {/if}

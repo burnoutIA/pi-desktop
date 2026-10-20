@@ -32,6 +32,15 @@ npm install
 
 Pour la voix, il faut seulement `uv` : la transcription et la synthèse tournent sur le processeur, sans GPU.
 
+## pi
+
+Pi Voice a son propre pi, comme harn : il n'utilise jamais le pi installé sur la machine.
+
+- `runtime/pi` : `@earendil-works/pi-coding-agent`, version fixée dans `scripts/setup-pi.sh`. L'assistant de démarrage lance ce script ; pour monter de version, change `PI_VERSION` et relance-le.
+- `data/pi-agent` : sa config (connexion, modèles, sessions), transmise à pi par `PI_CODING_AGENT_DIR`. À sa création, l'app y copie `auth.json`, `models.json` et `settings.json` depuis `~/.pi/agent` s'ils existent ; les sessions ne sont pas reprises.
+
+Les deux dossiers sont ignorés par git. `PI_BIN` et `PI_CODING_AGENT_DIR` permettent d'imposer un autre pi ou une autre config.
+
 ## Lancer
 
 ```bash
@@ -52,7 +61,7 @@ Pour vérifier la voix seule : `uv run scripts/test-voice.py`. Il fait dire une 
 - **Micro** (ou `Espace`) : parle, et le texte s'écrit dans la zone du bas, phrase par phrase (à chaque pause). Quand tu fais une pause, une barre se remplit pendant 0,9 s puis le texte est envoyé. Pendant ce délai, clique dans le texte ou tape pour le corriger avant l'envoi.
 - Un second clic sur le micro (ou `Espace`) envoie tout de suite, ~0,3 s après, le temps de transcrire la fin.
 - **Le micro n'écoute que sur demande** (`Espace` ou clic), jamais pendant que pi parle. Appuyer sur `Espace` pendant qu'il parle coupe sa voix et ouvre le micro.
-- **Agent vocal** (réglages, onglet Voix) : ce que tu dictes passe d'abord par lui. Il répond tout de suite, même pendant que pi travaille : il dit où en est pi, transmet à pi ce qui touche au projet (nouvelle demande, ou consigne en cours de route), ou arrête pi. Il tourne sur un serveur compatible OpenAI, par défaut [harn](../harn) (le modèle déjà chargé, sur un slot réservé, sans réflexion) ; la clé est lue dans `~/.pi/agent/models.json`. Ce que tu tapes au clavier va toujours directement à pi.
+- **Agent vocal** (réglages, onglet Voix) : ce que tu dictes passe d'abord par lui. Il répond tout de suite, même pendant que pi travaille : il dit où en est pi, transmet à pi ce qui touche au projet (nouvelle demande, ou consigne en cours de route), ou arrête pi. Il tourne sur un serveur compatible OpenAI, par défaut [harn](../harn) (le modèle déjà chargé, sur un slot réservé, sans réflexion) ; la clé est lue dans `data/pi-agent/models.json`. Ce que tu tapes au clavier va toujours directement à pi.
 - **Pendant que pi travaille**, sans agent vocal : ce que tu dis est envoyé comme consigne (`steer`). Il la prend en compte au prochain tour, sans perdre son travail.
 - Dire **« stop »** (ou « arrête ») ou appuyer sur `Ctrl+.` arrête pi net.
 - `Échap` coupe la voix, annule l'envoi automatique ou ferme le micro.

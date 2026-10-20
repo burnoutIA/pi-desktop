@@ -188,7 +188,7 @@ struct PiStatus {
     version: Option<String>,
 }
 
-/// pi est-il installé ? (cherché aussi dans ~/.local/bin, ~/.pi/agent/bin, /snap/bin…)
+/// Le pi de l'app (runtime/pi) est-il installé ?
 #[tauri::command]
 fn pi_status() -> PiStatus {
     match pi::pi_version() {
@@ -202,7 +202,7 @@ fn auth_mtime() -> u64 {
     pi::auth_mtime()
 }
 
-/// Lance un programme dans un terminal intégré ; « pi » désigne le pi installé.
+/// Lance un programme dans un terminal intégré ; « pi » désigne le pi de l'app.
 #[tauri::command]
 fn term_spawn(app: AppHandle, state: State<'_, AppState>, program: String, args: Vec<String>, cwd: Option<String>, cols: u16, rows: u16) -> Res<u32> {
     let program = if program == "pi" {
@@ -294,11 +294,12 @@ fn initial_dir() -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    applog::init();
+    applog!("démarrage de Pi Voice");
+    pi::init_agent_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            applog::init();
-            applog!("démarrage de Pi Voice");
             SERVERS.ensure(app.handle().clone());
             // Arrêt par signal (kill, fermeture de session) : on arrête aussi les serveurs.
             tauri::async_runtime::spawn(async {

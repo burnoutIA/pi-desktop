@@ -4,6 +4,7 @@
 
   type Node = { name: string; path: string; dir: boolean; children: Node[] };
   type Props = {
+    root: string;
     files: string[];
     status: Record<string, GitStatusKind>;
     touched: Set<string>;
@@ -12,8 +13,29 @@
     /** Vue « Modifications » : seulement les fichiers changés (git ou touchés par pi). */
     onlyChanged: boolean;
   };
-  let { files, status, touched, selected, onSelect, onlyChanged }: Props = $props();
+  let { root, files, status, touched, selected, onSelect, onlyChanged }: Props = $props();
 
+  // Arbre complet : tout est fermé par défaut, les dossiers ouverts sont mémorisés par projet.
+  const storeKey = $derived(`openDirs:${root}`);
+  let opened = $state<Set<string>>(new Set());
+  $effect(() => {
+    try {
+      opened = new Set(JSON.parse(localStorage.getItem(storeKey) ?? "[]"));
+    } catch {
+      opened = new Set();
+    }
+  });
+  function toggleOpened(path: string) {
+    const next = new Set(opened);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    opened = next;
+    try {
+      localStorage.setItem(storeKey, JSON.stringify([...next]));
+    } catch {}
+  }
+
+  // Vue « Modifications » : tout ouvert par défaut, repli temporaire.
   let collapsed = $state<Record<string, boolean>>({});
 
   // Dossiers contenant des changements : affichés ouverts et marqués.
@@ -63,8 +85,13 @@
   };
 
   function isOpen(n: Node) {
-    if (collapsed[n.path] !== undefined) return !collapsed[n.path];
-    return onlyChanged || dirtyDirs.has(n.path) || n.path.split("/").length < 2;
+    if (!onlyChanged) return opened.has(n.path);
+    return !collapsed[n.path];
+  }
+
+  function toggle(n: Node) {
+    if (onlyChanged) collapsed[n.path] = isOpen(n);
+    else toggleOpened(n.path);
   }
 </script>
 
@@ -77,7 +104,7 @@
             class="item dir"
             class:dirty={dirtyDirs.has(n.path)}
             style="padding-left:{10 + depth * 14}px"
-            onclick={() => (collapsed[n.path] = isOpen(n))}
+            onclick={() => toggle(n)}
           >
             <span class="caret" class:rot={isOpen(n)}>›</span>
             <span class="name">{n.name}</span>

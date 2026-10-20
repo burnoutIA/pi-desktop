@@ -6,3 +6,7 @@ src-tauri/gen/
 voice-server/
 .claude/
 *.log
+
+# pi propre à l'app (scripts/setup-pi.sh) et sa config (connexion, sessions)
+/runtime/
+/data/

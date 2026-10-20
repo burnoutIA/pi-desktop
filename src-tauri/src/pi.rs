@@ -39,12 +39,7 @@ pub fn prompt_path(scope: &str, root: Option<&str>) -> Result<std::path::PathBuf
             let root = root.filter(|r| !r.is_empty()).ok_or_else(|| anyhow!("aucun projet ouvert"))?;
             Ok(std::path::Path::new(root).join(".pi/APPEND_SYSTEM.md"))
         }
-        _ => {
-            let dir = std::env::var("PI_CODING_AGENT_DIR").unwrap_or_else(|_| {
-                format!("{}/.pi/agent", std::env::var("HOME").unwrap_or_default())
-            });
-            Ok(std::path::Path::new(&dir).join("APPEND_SYSTEM.md"))
-        }
+        _ => Ok(agent_dir().join("APPEND_SYSTEM.md")),
     }
 }
 
@@ -86,15 +81,47 @@ pub fn extended_path() -> String {
     dirs.join(":")
 }
 
-/// Chemin de `pi` s'il est installé (PI_BIN, sinon PATH étendu).
+/// Le pi propre à l'app : installé dans `runtime/pi` du projet par `scripts/setup-pi.sh`,
+/// jamais le pi global. `PI_BIN` permet d'en imposer un autre.
 pub fn find_pi() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("PI_BIN") {
         return Some(p.into());
     }
-    extended_path()
-        .split(':')
-        .map(|d| std::path::Path::new(d).join("pi"))
-        .find(|p| p.is_file())
+    let bin = crate::servers::project_root()?.join("runtime/pi/node_modules/.bin/pi");
+    bin.is_file().then_some(bin)
+}
+
+/// Dossier de config de pi propre à l'app (`data/pi-agent` du projet), sauf si
+/// `PI_CODING_AGENT_DIR` en impose un autre.
+pub fn agent_dir() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("PI_CODING_AGENT_DIR") {
+        return d.into();
+    }
+    match crate::servers::project_root() {
+        Some(root) => root.join("data/pi-agent"),
+        None => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".pi/agent"),
+    }
+}
+
+/// Crée le dossier de config au premier lancement en reprenant la connexion et les modèles du
+/// pi global (`~/.pi/agent`), puis le transmet à tous les pi lancés par l'app. Les sessions ne
+/// sont pas reprises. À appeler au démarrage, avant tout autre thread.
+pub fn init_agent_dir() {
+    let dir = agent_dir();
+    if !dir.exists() {
+        let global = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".pi/agent");
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => {
+                for f in ["auth.json", "models.json", "settings.json"] {
+                    if std::fs::copy(global.join(f), dir.join(f)).is_ok() {
+                        applog!("config de pi : {f} repris de {}", global.display());
+                    }
+                }
+            }
+            Err(e) => applog!("impossible de créer {} : {e}", dir.display()),
+        }
+    }
+    std::env::set_var("PI_CODING_AGENT_DIR", &dir);
 }
 
 fn pi_binary() -> String {
@@ -111,9 +138,7 @@ pub fn pi_version() -> Option<(String, String)> {
 
 /// Date de modification de auth.json (identifiants des fournisseurs), pour voir une connexion aboutir.
 pub fn auth_mtime() -> u64 {
-    let dir = std::env::var("PI_CODING_AGENT_DIR")
-        .unwrap_or_else(|_| format!("{}/.pi/agent", std::env::var("HOME").unwrap_or_default()));
-    std::fs::metadata(std::path::Path::new(&dir).join("auth.json"))
+    std::fs::metadata(agent_dir().join("auth.json"))
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
