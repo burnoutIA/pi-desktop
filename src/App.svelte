@@ -453,7 +453,7 @@
     const renamed = a.name.trim() !== agent.name.trim();
     agent = a;
     localStorage.setItem("agentConfig", JSON.stringify(a));
-    if (voiceCfg) updateVoice(voiceCfg); // nom de réveil et filtre suivent l'agent
+    if (voiceCfg) updateVoice(voiceCfg); // le nom de l'agent vocal suit celui de l'agent
     if (renamed && root) restartPi("Nom changé : pi redémarre pour le prendre en compte.");
   }
 

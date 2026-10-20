@@ -86,7 +86,7 @@ impl AudioShared {
 
 /// Démarre les flux audio dans un thread dédié (les `Stream` cpal y restent vivants).
 /// Retourne la fréquence d'échantillonnage du micro.
-/// Chaque consommateur du micro (STT, détecteur de réveil) reçoit sa copie des échantillons.
+/// Chaque consommateur du micro (aujourd'hui, le STT seul) reçoit sa copie des échantillons.
 pub fn start(shared: Arc<AudioShared>, mic_tx: Vec<UnboundedSender<Vec<f32>>>) -> Result<u32> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u32, String>>();
     std::thread::Builder::new().name("audio".into()).spawn(move || {
