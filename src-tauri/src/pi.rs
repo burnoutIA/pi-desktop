@@ -52,7 +52,13 @@ struct PiProcess {
 
 type Pending = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 
-pub struct PiManager {
+/// Un pi : un processus `pi --mode rpc` pour un run (un projet, ou une branche de travail).
+pub struct PiInstance {
+    run: String,
+    /// Emplacement de profil Chromium (Playwright) réservé à ce run : 0 = data/playwright/profile.
+    slot: usize,
+    /// pi travaille (entre agent_start et agent_settled) : fermer l'app demandera confirmation.
+    busy: Arc<std::sync::atomic::AtomicBool>,
     proc: Mutex<Option<PiProcess>>,
     pending: Pending,
     next_id: AtomicU64,
@@ -188,17 +194,15 @@ fn write_mcp_config(dir: &std::path::Path) -> Result<()> {
     }
     if playwright.is_file() {
         // Navigateur visible : la personne voit pi naviguer et peut cliquer ou taper dans sa
-        // fenêtre. Profil gardé dans data/playwright/profile (une connexion faite pour pi le reste).
+        // fenêtre. Profil gardé dans data/playwright/profile* (une connexion faite pour pi le reste).
         // Beaucoup d'outils : chargés à la demande (tool_search) pour ne pas alourdir le prompt.
         servers.insert(
             "playwright".into(),
             json!({
                 "command": playwright,
-                "args": [
-                    "--browser", "chromium",
-                    "--user-data-dir", data.join("playwright/profile"),
-                    "--output-dir", data.join("playwright"),
-                ],
+                "args": ["--browser", "chromium", "--output-dir", data.join("playwright")],
+                // Profil propre à chaque run (variable posée au lancement de pi, voir PiInstance).
+                "env": { "PLAYWRIGHT_MCP_USER_DATA_DIR": "${PI_DESKTOP_PW_PROFILE}" },
                 "timeout": 120,
                 "exposure": "deferred",
                 "description": "Navigateur web piloté (Playwright) : ouvrir une page, cliquer, remplir un formulaire, faire une capture, tester une interface. Il s'ouvre dans une fenêtre visible : la personne voit ce que fait pi et peut y cliquer ou taper.",
@@ -235,9 +239,12 @@ pub fn auth_mtime() -> u64 {
 }
 
 
-impl PiManager {
-    pub fn new() -> Self {
+impl PiInstance {
+    fn new(run: String, slot: usize) -> Self {
         Self {
+            run,
+            slot,
+            busy: Arc::default(),
             proc: Mutex::new(None),
             pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
@@ -246,23 +253,39 @@ impl PiManager {
     }
 
     /// Lance pi dans `cwd` (et arrête l'instance précédente).
+    /// `session` : fichier de session à reprendre ; sinon `resume` reprend la dernière (--continue).
     pub async fn start(
         &self,
         app: AppHandle,
         cwd: String,
         agent_name: Option<String>,
         resume: bool,
+        session: Option<String>,
+        extra_prompt: Option<String>,
         hook: EventHook,
     ) -> Result<()> {
         self.stop().await;
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
         let program = pi_binary();
-        applog!("lancement de pi : {program} --mode rpc (dossier {cwd})");
+        applog!("lancement de pi [{}] : {program} --mode rpc (dossier {cwd})", self.run);
+        let profile = agent_dir().parent().unwrap_or(std::path::Path::new(".")).join(match self.slot {
+            0 => "playwright/profile".to_string(),
+            n => format!("playwright/profile-{}", n + 1),
+        });
         let mut child = Command::new(&program)
             .env("PATH", extended_path())
-            .args(["--mode", "rpc", "--append-system-prompt", &voice_prompt(agent_name.as_deref())])
-            .args(resume.then_some("--continue"))
+            .args(["--mode", "rpc", "--append-system-prompt", &match &extra_prompt {
+                Some(x) => format!("{}\n\n{x}", voice_prompt(agent_name.as_deref())),
+                None => voice_prompt(agent_name.as_deref()),
+            }])
+            .args(match &session {
+                Some(f) => vec!["--session".to_string(), f.clone()],
+                None if resume => vec!["--continue".to_string()],
+                None => vec![],
+            })
+            // Profil Chromium propre au run : deux Chromium ne peuvent pas partager un profil.
+            .env("PI_DESKTOP_PW_PROFILE", &profile)
             .args(app_extensions())
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -284,6 +307,8 @@ impl PiManager {
         let pending = self.pending.clone();
         let generation = self.generation.clone();
         let app_out = app.clone();
+        let run_out = self.run.clone();
+        let busy_out = self.busy.clone();
         let child_out = child.clone();
         let last_err_out = last_err.clone();
         tauri::async_runtime::spawn(async move {
@@ -316,9 +341,15 @@ impl PiManager {
                         }
                     }
                 }
+                match value["type"].as_str() {
+                    Some("agent_start") => busy_out.store(true, Ordering::SeqCst),
+                    Some("agent_settled") => busy_out.store(false, Ordering::SeqCst),
+                    _ => {}
+                }
                 hook(&value);
-                let _ = app_out.emit("pi-event", &value);
+                let _ = app_out.emit("pi-event", json!({ "run": run_out, "event": value }));
             }
+            busy_out.store(false, Ordering::SeqCst);
             if generation.load(Ordering::SeqCst) == gen {
                 let code = tokio::time::timeout(Duration::from_secs(3), async { child_out.lock().await.wait().await })
                     .await
@@ -327,8 +358,8 @@ impl PiManager {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "inconnu".into());
                 let tail = last_err_out.lock().unwrap().join("\n");
-                applog!("pi s'est arrêté ({code}). Dernières erreurs :\n{tail}");
-                let _ = app_out.emit("pi-exit", json!({ "code": code, "stderr": tail }));
+                applog!("pi [{run_out}] s'est arrêté ({code}). Dernières erreurs :\n{tail}");
+                let _ = app_out.emit("pi-exit", json!({ "run": run_out, "code": code, "stderr": tail }));
             }
         });
 
@@ -394,7 +425,7 @@ impl PiManager {
         {
             let mut guard = self.proc.lock().await;
             let p = guard.as_mut().ok_or_else(|| anyhow!("pi n'est pas démarré"))?;
-            applog!("→ pi : {}", cmd["type"]);
+            applog!("→ pi [{}] : {}", self.run, cmd["type"]);
             p.stdin.write_all(&line).await?;
             p.stdin.flush().await?;
         }
@@ -406,5 +437,77 @@ impl PiManager {
                 Err(anyhow!("pas de réponse de pi pour `{}`", cmd["type"]))
             }
         }
+    }
+}
+
+/// Tous les pi en cours, un par run. Chacun tourne indépendamment des autres.
+pub struct PiManager {
+    runs: Mutex<HashMap<String, Arc<PiInstance>>>,
+}
+
+impl PiManager {
+    pub fn new() -> Self {
+        Self { runs: Mutex::new(HashMap::new()) }
+    }
+
+    async fn get(&self, run: &str) -> Result<Arc<PiInstance>> {
+        self.runs.lock().await.get(run).cloned().ok_or_else(|| anyhow!("pi n'est pas démarré"))
+    }
+
+    /// Lance (ou relance) le pi d'un run.
+    pub async fn start(
+        &self,
+        app: AppHandle,
+        run: String,
+        cwd: String,
+        agent_name: Option<String>,
+        resume: bool,
+        session: Option<String>,
+        extra_prompt: Option<String>,
+        hook: EventHook,
+    ) -> Result<()> {
+        let inst = {
+            let mut runs = self.runs.lock().await;
+            match runs.get(&run) {
+                Some(i) => i.clone(),
+                None => {
+                    // Premier emplacement de profil Chromium libre.
+                    let used: Vec<usize> = runs.values().map(|i| i.slot).collect();
+                    let slot = (0..).find(|n| !used.contains(n)).unwrap_or(0);
+                    let i = Arc::new(PiInstance::new(run.clone(), slot));
+                    runs.insert(run.clone(), i.clone());
+                    i
+                }
+            }
+        };
+        inst.start(app, cwd, agent_name, resume, session, extra_prompt, hook).await
+    }
+
+    /// Arrête le pi d'un run et l'oublie.
+    pub async fn stop(&self, run: &str) {
+        let inst = self.runs.lock().await.remove(run);
+        if let Some(i) = inst {
+            i.stop().await;
+        }
+    }
+
+    pub async fn send(&self, run: &str, cmd: Value) -> Result<Value> {
+        self.get(run).await?.send(cmd).await
+    }
+
+    /// Runs dont le pi travaille en ce moment (appelé à la fermeture, sur le fil principal : pas
+    /// d'attente bloquante, la liste n'est verrouillée qu'un instant par ailleurs).
+    pub fn busy_runs(&self) -> Vec<String> {
+        for _ in 0..200 {
+            if let Ok(runs) = self.runs.try_lock() {
+                return runs.values().filter(|i| i.busy.load(Ordering::SeqCst)).map(|i| i.run.clone()).collect();
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        vec!["?".into()] // état inconnu : mieux vaut demander confirmation
+    }
+
+    pub async fn write(&self, run: &str, record: Value) -> Result<()> {
+        self.get(run).await?.write(record).await
     }
 }

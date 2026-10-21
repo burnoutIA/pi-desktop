@@ -21,7 +21,8 @@ const HEADER_MAX: usize = 400;
 
 #[derive(Default)]
 pub(super) struct AgentState {
-    history: Vec<(&'static str, String)>,
+    /// Historique de conversation de chaque run : l'agent ne mélange pas les projets.
+    history: HashMap<String, Vec<(&'static str, String)>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -129,27 +130,42 @@ impl VoiceEngine {
     /// Réponse de l'agent à ce que tu viens de dire. `pi_state` : l'état de pi vu par l'interface.
     /// `pi_model` : le modèle de pi (« fournisseur/id »). S'il passe par le même serveur que l'agent,
     /// l'agent prend le même modèle : harn ne bascule jamais d'un modèle à l'autre au milieu d'une phrase.
-    pub fn agent_ask(self: &Arc<Self>, text: String, pi_state: String, pi_model: Option<String>) {
+    /// `run` : le run à qui s'adresse la phrase ; ses événements le portent (l'action va à ce run
+    /// même si la personne a changé de projet entre-temps).
+    pub fn agent_ask(self: &Arc<Self>, run: String, text: String, pi_state: String, pi_model: Option<String>) {
         self.stop_speaking(); // une nouvelle phrase coupe la précédente
         let generation = self.agent_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = me.agent_run(generation, &text, &pi_state, pi_model.as_deref()).await {
+            if let Err(e) = me.agent_run(&run, generation, &text, &pi_state, pi_model.as_deref()).await {
                 crate::applog!("agent vocal : {e}");
-                let _ = me.app.emit("voice-agent", AgentEvent::Error { message: e.to_string(), text });
+                me.emit_agent(&run, AgentEvent::Error { message: e.to_string(), text });
             }
         });
     }
 
-    pub fn agent_reset(&self) {
-        self.agent.lock().unwrap().history.clear();
+    fn emit_agent(&self, run: &str, ev: AgentEvent) {
+        let mut v = serde_json::to_value(ev).unwrap_or_default();
+        v["run"] = json!(run);
+        let _ = self.app.emit("voice-agent", v);
+    }
+
+    /// Oublie la conversation d'un run (ou de tous).
+    pub fn agent_reset(&self, run: Option<&str>) {
+        let mut st = self.agent.lock().unwrap();
+        match run {
+            Some(r) => {
+                st.history.remove(r);
+            }
+            None => st.history.clear(),
+        }
     }
 
     fn agent_current(&self, generation: u64) -> bool {
         self.agent_gen.load(Ordering::SeqCst) == generation
     }
 
-    async fn agent_run(self: &Arc<Self>, generation: u64, text: &str, pi_state: &str, pi_model: Option<&str>) -> anyhow::Result<()> {
+    async fn agent_run(self: &Arc<Self>, run: &str, generation: u64, text: &str, pi_state: &str, pi_model: Option<&str>) -> anyhow::Result<()> {
         let cfg = self.config();
         let name = {
             let n = cfg.agent_name.trim();
@@ -157,7 +173,7 @@ impl VoiceEngine {
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_else(|| "Pi".into())
         };
         let mut messages = vec![json!({ "role": "system", "content": system_prompt(&name) })];
-        for (role, content) in self.agent.lock().unwrap().history.iter() {
+        for (role, content) in self.agent.lock().unwrap().history.get(run).into_iter().flatten() {
             messages.push(json!({ "role": role, "content": content }));
         }
         // L'état change à chaque fois : il va dans le dernier message, pour garder le reste en cache.
@@ -220,7 +236,7 @@ impl VoiceEngine {
                 if let Some((action, instruction, skip)) = parse_header(&out, done) {
                     crate::applog!("agent vocal : action {action} ({} ms){}", t0.elapsed().as_millis(),
                         if instruction.is_empty() { String::new() } else { format!(" « {instruction} »") });
-                    let _ = self.app.emit("voice-agent", AgentEvent::Action { action: action.clone(), instruction: instruction.clone() });
+                    self.emit_agent(run, AgentEvent::Action { action: action.clone(), instruction: instruction.clone() });
                     header = Some((action, instruction));
                     spoken_upto = skip;
                 }
@@ -241,7 +257,7 @@ impl VoiceEngine {
         }
         if header.is_none() {
             let (action, instruction, skip) = parse_header(&out, true).unwrap_or(("repondre".into(), String::new(), 0));
-            let _ = self.app.emit("voice-agent", AgentEvent::Action { action, instruction });
+            self.emit_agent(run, AgentEvent::Action { action, instruction });
             for w in out[skip..].split_whitespace() {
                 let w = speech::clean_word(w);
                 if !w.is_empty() {
@@ -263,12 +279,13 @@ impl VoiceEngine {
         let skip = parse_header(&out, true).map(|(_, _, s)| s).unwrap_or(0);
         let oral = out[skip..].trim().to_string();
         crate::applog!("agent vocal : premier mot {} ms, fin {} ms : « {oral} »", first_word.unwrap_or(0), t0.elapsed().as_millis());
-        let _ = self.app.emit("voice-agent", AgentEvent::Reply { text: oral });
+        self.emit_agent(run, AgentEvent::Reply { text: oral });
         let mut st = self.agent.lock().unwrap();
-        st.history.push(("user", text.to_string()));
-        st.history.push(("assistant", out.trim().to_string()));
-        let excess = st.history.len().saturating_sub(HISTORY_MAX);
-        st.history.drain(..excess);
+        let h = st.history.entry(run.to_string()).or_default();
+        h.push(("user", text.to_string()));
+        h.push(("assistant", out.trim().to_string()));
+        let excess = h.len().saturating_sub(HISTORY_MAX);
+        h.drain(..excess);
         Ok(())
     }
 }

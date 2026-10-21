@@ -19,6 +19,14 @@
     argOptions: Record<string, { value: string; label: string }[]>;
     attachments: Attachment[];
     onAttach: () => void;
+    /** Modèle de cette session (indépendant des autres sessions). */
+    models: { key: string; label: string }[];
+    modelKey: string | null;
+    /** Le modèle est servi sur cette machine (carte graphique). */
+    modelLocal: boolean;
+    /** Autres runs qui utilisent déjà ce modèle local. */
+    modelShared: string[];
+    onModel: (key: string) => void;
   };
   let {
     value = $bindable(),
@@ -34,6 +42,11 @@
     argOptions,
     attachments = $bindable(),
     onAttach,
+    models,
+    modelKey,
+    modelLocal,
+    modelShared,
+    onModel,
   }: Props = $props();
 
   // Image collée (Ctrl+V) : jointe directement, sans passer par un fichier.
@@ -182,6 +195,24 @@
       onpointerdown={onCancelAuto}
       onpaste={onPaste}
     ></textarea>
+    {#if models.length}
+      <div class="meta">
+        <label class="model" title="Modèle de cette session : les autres sessions gardent le leur. Il s'applique au prochain tour.">
+          {#if modelKey}<span class="chip" class:local={modelLocal}>{modelLocal ? "local" : "cloud"}</span>{/if}
+          <select value={modelKey} onchange={(e) => onModel((e.target as HTMLSelectElement).value)}>
+            {#if !modelKey}<option value="" disabled selected>Modèle…</option>{/if}
+            {#each models as m (m.key)}
+              <option value={m.key}>{m.label}</option>
+            {/each}
+          </select>
+        </label>
+        {#if modelShared.length}
+          <span class="shared" title="Deux runs sur le même modèle local se partagent la carte graphique : ils ralentissent tous les deux.">
+            Déjà utilisé par {modelShared.join(", ")} : la carte graphique sera partagée.
+          </span>
+        {/if}
+      </div>
+    {/if}
   </div>
   <div class="actions">
     {#if countdown !== null}
@@ -327,6 +358,50 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+  .model {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .model select {
+    max-width: 260px;
+    padding: 1px 4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .model select:hover {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .chip {
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--line-2);
+    font-size: 10px;
+    line-height: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .chip.local {
+    border-color: var(--agent-1);
+    color: var(--agent-2);
+  }
+  .shared {
+    color: var(--modified);
   }
   .atts {
     display: flex;

@@ -120,12 +120,13 @@
 
     {#if models.length}
       <label class="field">
-        <span>Modèle</span>
+        <span>Modèle par défaut</span>
         <select value={modelKey} onchange={(e) => onModel((e.target as HTMLSelectElement).value)}>
           {#each models as m (m.key)}
             <option value={m.key}>{m.label}</option>
           {/each}
         </select>
+        <small>Pour les nouvelles sessions. Chaque session choisit ensuite le sien, sous la zone de saisie.</small>
       </label>
     {/if}
 

@@ -6,12 +6,14 @@
     sessions: SessionInfo[];
     currentPath: string | null;
     busy: boolean;
+    /** Le projet est suivi par git : une nouvelle session peut partir en parallèle, sur une branche. */
+    canParallel: boolean;
     agentName: string;
     onOpen: (s: SessionInfo) => void;
     onNew: () => void;
     onTrash: (s: SessionInfo) => void;
   };
-  let { sessions, currentPath, busy, agentName, onOpen, onNew, onTrash }: Props = $props();
+  let { sessions, currentPath, busy, canParallel, agentName, onOpen, onNew, onTrash }: Props = $props();
 
   /** En dessous, une session est « courte » (un essai, une question isolée) et va dans un groupe replié. */
   const SHORT = 4;
@@ -84,7 +86,16 @@
 <div class="panel">
   <div class="head">
     <span class="title">Sessions</span>
-    <button class="new" onclick={onNew} disabled={busy} title="Nouvelle session">
+    <button
+      class="new"
+      onclick={onNew}
+      disabled={busy && !canParallel}
+      title={busy
+        ? canParallel
+          ? "pi travaille : la nouvelle session part en parallèle, sur sa propre branche"
+          : "pi travaille (projet sans git : pas de travail en parallèle possible)"
+        : "Nouvelle session"}
+    >
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
         ><path d="M12 5v14M5 12h14" /></svg
       >
@@ -116,7 +127,7 @@
   .panel {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
     min-height: 0;
   }
   .head {

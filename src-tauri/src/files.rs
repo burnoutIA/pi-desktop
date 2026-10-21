@@ -227,3 +227,185 @@ mod watch_tests {
         std::fs::remove_dir_all(dir).ok();
     }
 }
+
+// ---------- Branches de travail (git worktree) ----------
+// Un run lancé en parallèle sur un projet déjà occupé travaille sur sa propre branche, dans un
+// dossier à part (data/worktrees/…), pour ne pas se marcher dessus avec l'autre run.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    pub path: String,
+    pub branch: String,
+    /// Branche du projet au moment de la création : celle où le travail sera fusionné.
+    pub base: String,
+}
+
+fn git_ok(dir: &str, args: &[&str]) -> Result<String> {
+    let o = git(dir, args)?;
+    if !o.status.success() {
+        let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
+        return Err(anyhow!("git {} : {}", args.first().unwrap_or(&""), if msg.is_empty() { "échec".into() } else { msg }));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+fn slug(label: &str) -> String {
+    let mut s: String = label
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' => 'i',
+            'ô' | 'ö' => 'o',
+            'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c if c.is_ascii_alphanumeric() => c,
+            _ => '-',
+        })
+        .collect();
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    let s = s.trim_matches('-');
+    let s: String = s.chars().take(30).collect();
+    if s.is_empty() { "travail".into() } else { s.trim_end_matches('-').to_string() }
+}
+
+/// Crée une branche `pi/<nom>` et son dossier de travail, à partir du dernier commit du projet.
+pub fn worktree_create(root: &str, label: &str) -> Result<Worktree> {
+    let base = git_ok(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    anyhow::ensure!(base != "HEAD", "le projet n'est sur aucune branche (HEAD détachée)");
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let id = format!("{:x}", stamp % 0xfffff);
+    let name = format!("{}-{id}", slug(label));
+    let branch = format!("pi/{name}");
+    let root_path = Path::new(root).canonicalize()?;
+    let project = root_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "projet".into());
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        root_path.hash(&mut h);
+        format!("{:08x}", h.finish() as u32)
+    };
+    let dir = crate::pi::agent_dir().parent().unwrap_or(Path::new(".")).join("worktrees").join(format!("{project}-{hash}")).join(&name);
+    std::fs::create_dir_all(dir.parent().unwrap())?;
+    let dir_s = dir.to_string_lossy().into_owned();
+    git_ok(root, &["worktree", "add", "-b", &branch, &dir_s, "HEAD"])?;
+    Ok(Worktree { path: dir_s, branch, base })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    /// Commits de la branche absents de la branche de base.
+    pub ahead: u32,
+    /// Modifications pas encore enregistrées dans un commit.
+    pub dirty: bool,
+    pub exists: bool,
+}
+
+pub fn worktree_info(root: &str, path: &str, branch: &str, base: &str) -> Result<WorktreeInfo> {
+    if !Path::new(path).is_dir() {
+        return Ok(WorktreeInfo { ahead: 0, dirty: false, exists: false });
+    }
+    let ahead = git_ok(root, &["rev-list", "--count", &format!("{base}..{branch}")])?.parse().unwrap_or(0);
+    let dirty = !git_ok(path, &["status", "--porcelain"])?.is_empty();
+    Ok(WorktreeInfo { ahead, dirty, exists: true })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub merged: bool,
+    /// Fichiers en conflit (la fusion a été annulée : rien n'a bougé dans le projet).
+    pub conflicts: Vec<String>,
+}
+
+/// Fusionne le travail de la branche dans la branche courante du projet. Les modifications pas
+/// encore enregistrées sont d'abord mises dans un commit sur la branche.
+pub fn worktree_merge(root: &str, path: &str, branch: &str, message: &str) -> Result<MergeOutcome> {
+    if !git_ok(path, &["status", "--porcelain"])?.is_empty() {
+        git_ok(path, &["add", "-A"])?;
+        git_ok(path, &["commit", "-m", message])?;
+    }
+    let o = git(root, &["merge", "--no-ff", "--no-edit", "-m", &format!("Fusion de {branch} : {message}"), branch])?;
+    if o.status.success() {
+        return Ok(MergeOutcome { merged: true, conflicts: vec![] });
+    }
+    let conflicts: Vec<String> =
+        git_ok(root, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default().lines().map(str::to_string).collect();
+    if conflicts.is_empty() {
+        // Refus avant de commencer (modifications locales qui seraient écrasées…) : on rapporte git.
+        let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
+        let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        return Err(anyhow!("fusion impossible : {}", if msg.is_empty() { out } else { msg }));
+    }
+    let _ = git(root, &["merge", "--abort"]);
+    Ok(MergeOutcome { merged: false, conflicts })
+}
+
+/// Supprime le dossier de travail, et la branche si demandé.
+pub fn worktree_remove(root: &str, path: &str, branch: &str, delete_branch: bool) -> Result<()> {
+    if Path::new(path).exists() {
+        git_ok(root, &["worktree", "remove", "--force", path])?;
+    }
+    let _ = git(root, &["worktree", "prune"]);
+    if delete_branch {
+        git_ok(root, &["branch", "-D", branch])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+
+    fn sh(dir: &Path, args: &[&str]) {
+        let o = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(o.status.success(), "git {args:?} : {}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    #[test]
+    fn create_work_merge_remove() {
+        let tmp = std::env::temp_dir().join(format!("wt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let repo = tmp.join("projet");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.join("data/pi-agent"));
+        sh(&repo, &["init", "-q", "-b", "main"]);
+        sh(&repo, &["config", "user.email", "t@t"]);
+        sh(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "un\n").unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-qm", "init"]);
+        let root = repo.to_string_lossy().into_owned();
+
+        let wt = worktree_create(&root, "Ajoute l'export CSV").unwrap();
+        assert_eq!(wt.base, "main");
+        assert!(wt.branch.starts_with("pi/ajoute-l-export-csv-"), "{}", wt.branch);
+        std::fs::write(Path::new(&wt.path).join("b.txt"), "nouveau\n").unwrap();
+        let info = worktree_info(&root, &wt.path, &wt.branch, &wt.base).unwrap();
+        assert!(info.dirty && info.exists && info.ahead == 0);
+
+        let out = worktree_merge(&root, &wt.path, &wt.branch, "export CSV").unwrap();
+        assert!(out.merged);
+        assert!(repo.join("b.txt").exists());
+
+        // Conflit : les deux côtés changent a.txt.
+        let wt2 = worktree_create(&root, "conflit").unwrap();
+        std::fs::write(Path::new(&wt2.path).join("a.txt"), "branche\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "projet\n").unwrap();
+        sh(&repo, &["commit", "-qam", "côté projet"]);
+        let out = worktree_merge(&root, &wt2.path, &wt2.branch, "conflit").unwrap();
+        assert!(!out.merged);
+        assert_eq!(out.conflicts, vec!["a.txt".to_string()]);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "projet\n"); // fusion annulée
+
+        worktree_remove(&root, &wt.path, &wt.branch, true).unwrap();
+        worktree_remove(&root, &wt2.path, &wt2.branch, true).unwrap();
+        assert!(!Path::new(&wt2.path).exists());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}

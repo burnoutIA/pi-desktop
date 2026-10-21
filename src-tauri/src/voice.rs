@@ -7,7 +7,7 @@ use crate::speech::{self, OralExtractor, Speech};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -170,6 +170,8 @@ pub struct VoiceEngine {
     agent: Mutex<agent::AgentState>,
     /// Réponse de l'agent vocal en cours ; changé à chaque coupure de la voix.
     agent_gen: AtomicU64,
+    /// Run affiché : le seul dont pi parle à voix haute.
+    active_run: Mutex<String>,
 }
 
 fn norm(w: &str) -> String {
@@ -234,6 +236,7 @@ impl VoiceEngine {
             tts_cut: AtomicU64::new(0),
             agent: Mutex::new(agent::AgentState::default()),
             agent_gen: AtomicU64::new(0),
+            active_run: Mutex::new(String::new()),
         })
     }
 
@@ -681,7 +684,27 @@ impl VoiceEngine {
 
     // ---------- Événements pi -> voix ----------
 
-    pub fn on_pi_event(self: &Arc<Self>, ev: &Value) {
+    /// Le run affiché : seul lui parle (résumé lu à voix haute). Changer de run coupe la voix.
+    pub fn set_active_run(&self, run: &str) {
+        let changed = {
+            let mut a = self.active_run.lock().unwrap();
+            let changed = *a != run;
+            *a = run.to_string();
+            changed
+        };
+        if changed {
+            self.stop_speaking();
+            let mut r = self.run.lock().unwrap();
+            r.extractor.reset();
+            r.spoke = false;
+            r.last_text.clear();
+        }
+    }
+
+    pub fn on_pi_event(self: &Arc<Self>, run: &str, ev: &Value) {
+        if *self.active_run.lock().unwrap() != run {
+            return; // run en arrière-plan : silencieux (l'interface prévient quand il a fini)
+        }
         match ev["type"].as_str() {
             Some("agent_start") => {
                 let mut r = self.run.lock().unwrap();

@@ -17,6 +17,8 @@
     type VoiceConfig,
   } from "./lib/api";
   import { Session, splitOral } from "./lib/session.svelte";
+  import { Run, branchPrompt, loadBranchRuns, saveBranchRuns } from "./lib/run.svelte";
+  import { chime } from "./lib/chime";
   import { displayName } from "./lib/titles";
   import { APP_COMMANDS, fromPi, type Command } from "./lib/commands";
   import { isDemo, fillDemo, demoLevels, demoWave, DEMO_FILES, DEMO_GIT, DEMO_SESSIONS } from "./lib/demo";
@@ -27,6 +29,9 @@
   import Explorer from "./components/Explorer.svelte";
   import { isPreviewable, type Preview } from "./lib/preview";
   import SessionsPanel from "./components/SessionsPanel.svelte";
+  import RunsPanel from "./components/RunsPanel.svelte";
+  import BranchBar from "./components/BranchBar.svelte";
+  import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import Settings from "./components/Settings.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import ExtensionDialog from "./components/ExtensionDialog.svelte";
@@ -36,10 +41,18 @@
   const AUTO_SEND_MS = 600;
   const STOP_WORDS = /^\s*(stop|stoppe|arr[êe]te|arr[êe]tez|annule)\b[\s.!]*$/i;
 
-  const session = new Session();
+  // ---------- Runs : un pi par projet (ou par branche de travail), un seul affiché ----------
+  let runs = $state<Run[]>(loadBranchRuns());
+  let visibleId = $state<string | null>(null);
+  const run = $derived(runs.find((r) => r.id === visibleId) ?? null);
+  /** Session affichée (vide tant qu'aucun run n'est ouvert). */
+  const idleSession = new Session();
+  const session = $derived(run?.session ?? idleSession);
+  /** Dossier affiché : celui où travaille le pi du run visible (projet ou branche). */
+  const root = $derived(run?.cwd ?? "");
+  const piUp = $derived(run?.piUp ?? false);
+  $effect(() => saveBranchRuns(runs));
 
-  let root = $state("");
-  let piUp = $state(false);
   let files = $state<string[]>([]);
   let git = $state<GitStatus>({ isRepo: false, branch: null, files: [] });
   let selected = $state<string | null>(null);
@@ -101,15 +114,16 @@
     handle.addEventListener("lostpointercapture", up);
   }
 
-  // ---------- Sessions de pi dans ce dossier ----------
-  let sessions = $state<SessionInfo[]>([]);
-  let sessionPath = $state<string | null>(null);
+  // ---------- Sessions de pi dans le dossier du run ----------
+  const sessions = $derived(run?.sessions ?? []);
+  const sessionPath = $derived(run?.sessionPath ?? null);
 
-  async function refreshSessions() {
+  async function refreshSessions(r: Run | null = run) {
+    if (!r) return;
     try {
-      const st = await api.piSend({ type: "get_state" });
-      sessionPath = st?.data?.sessionFile ?? null;
-      sessions = sessionPath ? await api.listSessions(sessionPath) : [];
+      const st = await r.send({ type: "get_state" });
+      r.sessionPath = st?.data?.sessionFile ?? null;
+      r.sessions = r.sessionPath ? await api.listSessions(r.sessionPath) : [];
     } catch {
       /* pi pas encore prêt */
     }
@@ -143,33 +157,39 @@
   async function onProviderConnected() {
     onboarding = null;
     toast("Fournisseur connecté : pi redémarre.");
-    if (root) await openProject(root, true);
+    if (run) await startRun(run, { resume: true });
   }
 
   // ---------- Dialogues des extensions de pi (/mcp, /llama…) ----------
-  let uiRequests = $state<any[]>([]);
+  const uiRequests = $derived(run?.uiRequests ?? []);
 
-  function onExtensionUi(ev: any) {
+  function onExtensionUi(r: Run, ev: any) {
+    const shown = r.id === visibleId;
     switch (ev.method) {
       case "notify":
-        toast(ev.message ?? "");
+        toast(shown ? (ev.message ?? "") : `${runName(r)} : ${ev.message ?? ""}`);
         break;
       case "set_editor_text":
-        draft = ev.text ?? "";
+        if (shown) draft = ev.text ?? "";
         break;
       case "select":
       case "confirm":
       case "input":
       case "editor":
-        uiRequests = [...uiRequests, ev];
+        r.uiRequests = [...r.uiRequests, ev];
+        // En arrière-plan, pi est bloqué jusqu'à ta réponse : on prévient.
+        if (!shown) notifyBackground(r, "waiting");
         break;
       // setStatus, setWidget, setTitle : affichages propres au terminal, ignorés ici.
     }
   }
 
-  function respondUi(req: any, r: Record<string, unknown>) {
-    uiRequests = uiRequests.filter((x) => x.id !== req.id);
-    api.piWrite({ type: "extension_ui_response", id: req.id, ...r }).catch((e) => toast(String(e)));
+  function respondUi(req: any, res: Record<string, unknown>) {
+    const r = run;
+    if (!r) return;
+    r.uiRequests = r.uiRequests.filter((x) => x.id !== req.id);
+    if (r.attention === "waiting" && !r.uiRequests.length) r.attention = null;
+    r.write({ type: "extension_ui_response", id: req.id, ...res }).catch((e) => toast(String(e)));
   }
 
   // ---------- Mode zen : la voix seule, sur un fond d'ambiance ----------
@@ -287,11 +307,11 @@
   let thinkingLevels = $state<string[]>([]);
   const commands = $derived([...APP_COMMANDS, ...piCommands]);
 
-  async function loadCommands() {
+  async function loadCommands(r: Run) {
     try {
       const [c, t] = await Promise.all([
-        api.piSend({ type: "get_commands" }),
-        api.piSend({ type: "get_available_thinking_levels" }),
+        r.send({ type: "get_commands" }),
+        r.send({ type: "get_available_thinking_levels" }),
       ]);
       piCommands = fromPi(c?.data?.commands ?? []);
       thinkingLevels = t?.data?.levels ?? [];
@@ -318,7 +338,7 @@
         return true;
       case "compact": {
         session.status = "Compaction du contexte…";
-        const r = await api.piSend({ type: "compact", ...(arg ? { customInstructions: arg } : {}) });
+        const r = await run!.send({ type: "compact", ...(arg ? { customInstructions: arg } : {}) });
         session.status = null;
         if (r?.success === false) toast(r.error ?? "Compaction impossible");
         else {
@@ -334,8 +354,8 @@
         }
         const q = arg.toLowerCase();
         const hit = models.find((x) => x.key.toLowerCase() === q) ?? models.find((x) => x.key.toLowerCase().includes(q) || x.label.toLowerCase().includes(q));
-        if (hit) {
-          await setModel(hit.key);
+        if (hit && run) {
+          await setModel(run, hit.key);
           session.notice(`Modèle : ${hit.label}`);
         } else toast(`Modèle introuvable : ${arg}`);
         return true;
@@ -345,7 +365,7 @@
           toast(`Niveaux disponibles : ${thinkingLevels.join(", ") || "aucun"}`);
           return true;
         }
-        const r = await api.piSend({ type: "set_thinking_level", level: arg });
+        const r = await run!.send({ type: "set_thinking_level", level: arg });
         if (r?.success === false) toast(r.error ?? "Niveau refusé");
         else session.notice(`Réflexion : ${arg}`);
         return true;
@@ -355,14 +375,14 @@
           toast("Donne un nom : /name mon sujet");
           return true;
         }
-        await api.piSend({ type: "set_session_name", name: arg });
-        if (sessionPath) titled.add(sessionPath);
+        await run!.send({ type: "set_session_name", name: arg });
+        if (run?.sessionPath) run.titled.add(run.sessionPath);
         await refreshSessions();
         session.notice(`Session renommée : ${arg}`);
         return true;
       }
       case "session": {
-        const r = await api.piSend({ type: "get_session_stats" });
+        const r = await run!.send({ type: "get_session_stats" });
         const d = r?.data;
         if (!d) return true;
         const ctx = d.contextUsage;
@@ -374,7 +394,7 @@
         return true;
       }
       case "copy": {
-        const r = await api.piSend({ type: "get_last_assistant_text" });
+        const r = await run!.send({ type: "get_last_assistant_text" });
         const t = r?.data?.text;
         if (!t) return void toast("Aucune réponse à copier."), true;
         try {
@@ -386,7 +406,7 @@
         return true;
       }
       case "export": {
-        const r = await api.piSend({ type: "export_html", ...(arg ? { outputPath: arg } : {}) });
+        const r = await run!.send({ type: "export_html", ...(arg ? { outputPath: arg } : {}) });
         if (r?.success === false) toast(r.error ?? "Export impossible");
         else session.notice(`Session exportée : ${r?.data?.path}`);
         return true;
@@ -396,47 +416,54 @@
   }
 
   // Titre court généré par le modèle après le premier échange, enregistré dans la session pi.
-  const titled = new Set<string>();
-  async function maybeTitle() {
-    const path = sessionPath;
-    if (!path || !root || titled.has(path)) return;
-    if (sessions.find((s) => s.path === path)?.named) return void titled.add(path);
-    const user = session.items.find((i) => i.kind === "user");
-    const reply = session.items.find(
+  async function maybeTitle(r: Run) {
+    const path = r.sessionPath;
+    if (!path || r.titled.has(path)) return;
+    if (r.sessions.find((x) => x.path === path)?.named) {
+      r.titled.add(path);
+      if (r.branch && !r.label) r.label = r.sessions.find((x) => x.path === path)?.title ?? "";
+      return;
+    }
+    const user = r.session.items.find((i) => i.kind === "user");
+    const reply = r.session.items.find(
       (i) => i.kind === "assistant" && i.blocks.some((b) => b?.type === "text" && b.text.trim()),
     );
     if (!user || user.kind !== "user" || !reply || reply.kind !== "assistant") return;
-    titled.add(path);
+    r.titled.add(path);
     const text = reply.blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
     const { body, oral } = splitOral(text);
     try {
-      const title = await api.generateTitle(root, modelKey, user.text, body || oral || "");
-      if (sessionPath !== path) return; // on a changé de session entre-temps
-      await api.piSend({ type: "set_session_name", name: title });
-      await refreshSessions();
+      const title = await api.generateTitle(r.cwd, r.modelKey, user.text, body || oral || "");
+      if (r.sessionPath !== path) return; // on a changé de session entre-temps
+      await r.send({ type: "set_session_name", name: title });
+      if (r.branch) r.label = title;
+      await refreshSessions(r);
     } catch (e) {
       api.log(`titre de session : ${e}`);
     }
   }
 
   async function newSession() {
-    if (session.busy) return;
+    if (!run) return;
+    // pi travaille : la nouvelle session part en parallèle, sur une branche.
+    if (session.busy) return startParallel();
     await api.stopSpeaking();
-    const r = await api.piSend({ type: "new_session" });
+    const r = await run.send({ type: "new_session" });
     if (r?.data?.cancelled) return toast("Nouvelle session annulée par une extension.");
     session.reset();
     await refreshSessions();
   }
 
   async function openSession(s: SessionInfo) {
-    if (session.busy) return;
+    if (session.busy || !run) return;
     await api.stopSpeaking();
-    const r = await api.piSend({ type: "switch_session", sessionPath: s.path });
+    const r = await run.send({ type: "switch_session", sessionPath: s.path });
     if (r?.success === false) return toast(r.error ?? "Impossible d'ouvrir cette session");
     if (r?.data?.cancelled) return toast("Changement de session annulé par une extension.");
-    const m = await api.piSend({ type: "get_messages" });
+    const m = await run.send({ type: "get_messages" });
     session.loadHistory(m?.data?.messages ?? []);
     await refreshSessions();
+    await loadModels(run, false);
   }
 
   async function trashSession(s: SessionInfo) {
@@ -465,55 +492,75 @@
     agent = a;
     localStorage.setItem("agentConfig", JSON.stringify(a));
     if (voiceCfg) updateVoice(voiceCfg); // le nom de l'agent vocal suit celui de l'agent
-    if (renamed && root) restartPi("Nom changé : pi redémarre pour le prendre en compte.");
+    if (renamed && run) restartPi("Nom changé : pi redémarre pour le prendre en compte.");
   }
 
-  /** Relance pi (nouveau nom, prompt système modifié…) en gardant le projet. */
+  /** Relance le pi du run affiché (nouveau nom, prompt système modifié…) en gardant sa conversation. */
   function restartPi(why: string) {
-    if (!root) return;
-    if (session.busy) {
+    const r = run;
+    if (!r) return;
+    if (r.session.busy) {
       toast("pi travaille : la modification s'appliquera au prochain redémarrage.");
       return;
     }
-    openProject(root, true).then(() => session.notice(why));
+    startRun(r, { resume: true }).then(() => r.session.notice(why));
   }
 
-  // Modèles disponibles dans la configuration de pi ; le dernier choisi est mémorisé.
+  // Modèles disponibles dans la configuration de pi (les mêmes pour tous les runs). Chaque run a
+  // le sien ; le modèle par défaut (réglages) sert aux nouvelles sessions.
   let models = $state<{ key: string; label: string }[]>([]);
   /** Types d'entrée acceptés par chaque modèle (« text », « image »). */
   let modelInputs = $state<Record<string, string[]>>({});
-  let modelKey = $state<string | null>(null);
+  /** Modèles servis sur cette machine (localhost) : ils occupent la carte graphique. */
+  let modelLocal = $state<Record<string, boolean>>({});
+  let defaultModel = $state<string | null>(localStorage.getItem("model"));
+  const modelKey = $derived(run?.modelKey ?? null);
   const argOptions = $derived({
     model: models.map((m) => ({ value: m.key, label: m.label })),
     thinking: thinkingLevels.map((l) => ({ value: l, label: l })),
   });
+  /** Le modèle local choisi tourne déjà pour un autre run : la carte sera partagée. */
+  const modelShared = $derived.by(() => {
+    const k = run?.modelKey;
+    if (!k || !modelLocal[k]) return [];
+    return runs.filter((r) => r !== run && r.piUp && r.modelKey === k).map(runName);
+  });
 
-  async function loadModels() {
-    const st = await api.piSend({ type: "get_state" });
+  /** `applyDefault` : nouvelle session, on lui donne le modèle par défaut. */
+  async function loadModels(r: Run, applyDefault: boolean) {
+    const st = await r.send({ type: "get_state" });
     const cur = st?.data?.model;
-    const av = await api.piSend({ type: "get_available_models" });
-    models = (av?.data?.models ?? []).map((m: any) => ({ key: `${m.provider}/${m.id}`, label: m.name ?? m.id }));
-    modelInputs = Object.fromEntries((av?.data?.models ?? []).map((m: any) => [`${m.provider}/${m.id}`, m.input ?? ["text"]]));
+    const av = await r.send({ type: "get_available_models" });
+    const list = av?.data?.models ?? [];
+    models = list.map((m: any) => ({ key: `${m.provider}/${m.id}`, label: m.name ?? m.id }));
+    modelInputs = Object.fromEntries(list.map((m: any) => [`${m.provider}/${m.id}`, m.input ?? ["text"]]));
+    modelLocal = Object.fromEntries(
+      list.map((m: any) => [`${m.provider}/${m.id}`, /\/\/(127\.0\.0\.1|localhost|\[::1\])\b/.test(m.baseUrl ?? "")]),
+    );
     const keys = models.map((m) => m.key);
-    const saved = localStorage.getItem("model");
-    const wanted = saved && keys.includes(saved) ? saved : null;
+    const wanted = applyDefault && defaultModel && keys.includes(defaultModel) ? defaultModel : null;
     const curKey = cur ? `${cur.provider}/${cur.id}` : null;
-    if (wanted && wanted !== curKey) await setModel(wanted, false);
+    if (wanted && wanted !== curKey) await setModel(r, wanted);
     else {
-      modelKey = curKey;
-      session.model = cur?.name ?? cur?.id ?? null;
+      r.modelKey = curKey;
+      r.session.model = cur?.name ?? cur?.id ?? null;
     }
     // Aucun modèle utilisable : pi n'a pas encore de fournisseur connecté.
     if (models.length === 0 && onboarding === null) onboarding = "login";
   }
 
-  async function setModel(key: string, remember = true) {
+  /** Modèle d'un run : s'applique à son prochain tour, sans toucher aux autres runs. */
+  async function setModel(r: Run, key: string) {
     const i = key.indexOf("/");
-    const r = await api.piSend({ type: "set_model", provider: key.slice(0, i), modelId: key.slice(i + 1) });
-    if (r?.success === false) return toast(r.error ?? "Modèle refusé");
-    modelKey = key;
-    session.model = r?.data?.name ?? key.slice(i + 1);
-    if (remember) localStorage.setItem("model", key);
+    const res = await r.send({ type: "set_model", provider: key.slice(0, i), modelId: key.slice(i + 1) });
+    if (res?.success === false) return toast(res.error ?? "Modèle refusé");
+    r.modelKey = key;
+    r.session.model = res?.data?.name ?? key.slice(i + 1);
+  }
+
+  function setDefaultModel(key: string) {
+    defaultModel = key;
+    localStorage.setItem("model", key);
   }
 
   let draft = $state("");
@@ -534,7 +581,7 @@
     }
     return null;
   });
-  const projectName = $derived(root ? root.split("/").filter(Boolean).pop() : "");
+  const projectName = $derived(run ? run.projectName : "");
 
   function relPath(p: string) {
     let r = p;
@@ -548,38 +595,148 @@
     setTimeout(() => (toasts = toasts.filter((t) => t.id !== id)), 6000);
   }
 
-  // ---------- Projet ----------
+  // ---------- Projet et runs ----------
 
-  /** `resume` : relance pi sur le même projet en reprenant sa conversation (--continue). */
-  async function openProject(dir: string, resume = false) {
+  /** Nom d'un run pour les listes et notifications : projet, et branche le cas échéant. */
+  function runName(r: Run) {
+    return r.branch ? `${r.projectName} · ${r.label || r.branch.branch.replace(/^pi\//, "")}` : r.projectName;
+  }
+
+  /** Lance (ou relance) le pi d'un run. Sans `resume` ni `session`, c'est une nouvelle session. */
+  async function startRun(r: Run, opts: { resume?: boolean; session?: string | null } = {}) {
     try {
-      if (!resume) {
-        session.reset();
-        selected = null;
-        preview = null;
-        pinned = false;
+      await api.piStart(r.id, r.cwd, agent.name.trim() || null, { ...opts, extraPrompt: branchPrompt(r) });
+      r.piUp = true;
+      const fresh = !opts.resume && !opts.session;
+      if (fresh) r.session.reset();
+      else if (opts.session || opts.resume) {
+        const m = await r.send({ type: "get_messages" });
+        if (!r.session.items.length) r.session.loadHistory(m?.data?.messages ?? []);
       }
-      root = dir;
-      await api.openProject(dir, agent.name.trim() || null, resume);
-      piUp = true;
-      // Les dossiers temporaires (tests) ne deviennent pas le « dernier projet ».
-      if (!dir.startsWith("/tmp/")) localStorage.setItem("lastProject", dir);
-      await refreshFiles();
-      await loadModels();
-      await refreshSessions();
-      await loadCommands();
+      await loadModels(r, fresh);
+      await refreshSessions(r);
+      await loadCommands(r);
     } catch (e) {
-      piUp = false;
-      root = "";
-      if (localStorage.getItem("lastProject") === dir) localStorage.removeItem("lastProject");
-      toast(String(e));
+      r.piUp = false;
+      throw e;
     }
+  }
+
+  /** Affiche un run : l'explorateur, la voix et le micro passent sur lui ; les autres continuent. */
+  async function showRun(r: Run) {
+    if (visibleId === r.id) return;
+    cancelAuto();
+    if (listening) await api.listen(false, false);
+    visibleId = r.id;
+    selected = null;
+    preview = null;
+    pinned = false;
+    files = [];
+    git = { isRepo: false, branch: null, files: [] };
+    await api.voiceSetActiveRun(r.id);
+    if (!r.branch && !r.root.startsWith("/tmp/")) localStorage.setItem("lastProject", r.root);
+    try {
+      await api.watchDir(r.cwd);
+      await refreshFiles();
+    } catch (e) {
+      api.log(`affichage du run ${r.id} : ${e}`);
+    }
+    // Revenu sur un run qui a fini en arrière-plan : on lit son résumé, s'il n'a pas été lu.
+    const oral = r.pendingOral;
+    r.pendingOral = null;
+    if (r.attention !== "waiting") r.attention = null;
+    if (oral && voiceCfg?.ttsEnabled) api.speak(oral);
+  }
+
+  /** Ouvre un projet : son run s'il tourne déjà, sinon un nouveau. Le run affiché continue. */
+  async function openProject(dir: string) {
+    let r = runs.find((x) => x.root === dir && !x.branch);
+    if (!r) {
+      r = new Run(dir);
+      runs = [...runs, r];
+      try {
+        await startRun(r, { resume: false });
+      } catch (e) {
+        runs = runs.filter((x) => x !== r);
+        if (localStorage.getItem("lastProject") === dir) localStorage.removeItem("lastProject");
+        return toast(String(e));
+      }
+    }
+    await showRun(runs.find((x) => x.id === r!.id)!);
+  }
+
+  /** Un run sur branche resté en pause (app relancée) : on relance son pi sur sa dernière session. */
+  async function selectRun(r: Run) {
+    if (!r.piUp) {
+      try {
+        await startRun(r, { resume: true });
+      } catch (e) {
+        toast(String(e));
+        // Une branche dont le dossier a disparu s'affiche quand même : sa barre permet de la
+        // garder ou de l'abandonner.
+        if (!r.branch) return;
+      }
+    }
+    await showRun(r);
+  }
+
+  /** Nouveau run sur le projet affiché, en parallèle, sur sa propre branche. */
+  async function startParallel() {
+    const base = run;
+    if (!base) return;
+    if (!git.isRepo && !base.branch) return toast("Ce projet n'est pas suivi par git : impossible de lancer un travail en parallèle sur une branche.");
+    try {
+      const stamp = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }).replace(":", "h");
+      const wt = await api.worktreeCreate(base.root, `session ${stamp}`);
+      const r = new Run(base.root, wt);
+      runs = [...runs, r];
+      await startRun(r, { resume: false });
+      await showRun(r);
+      r.session.notice(`Nouvelle session en parallèle, sur la branche ${wt.branch} (copie du dernier commit de ${wt.base}). Le travail en cours continue de son côté.`);
+    } catch (e) {
+      toast(`Travail en parallèle impossible : ${e}`);
+    }
+  }
+
+  /** Arrête le pi d'un run. Un run sur branche reste dans la liste (en pause) : son travail attend d'être fusionné. */
+  async function closeRun(r: Run) {
+    await api.piStop(r.id);
+    r.piUp = false;
+    r.session.busy = false;
+    if (!r.branch) runs = runs.filter((x) => x !== r);
+    if (visibleId === r.id && !r.branch) {
+      visibleId = null;
+      const next = runs.find((x) => x.piUp) ?? null;
+      if (next) await showRun(next);
+    }
+  }
+
+  /** Fin d'un run sur branche (fusionné, gardé ou abandonné) : il quitte la liste. */
+  async function dropBranchRun(r: Run) {
+    await api.piStop(r.id);
+    runs = runs.filter((x) => x !== r);
+    api.voiceAgentReset(r.id);
+    if (visibleId === r.id) {
+      visibleId = null;
+      await openProject(r.root);
+    }
+  }
+
+  /** Un run en arrière-plan a fini, planté, ou attend ta réponse : pastille, notification et petit son. */
+  function notifyBackground(r: Run, kind: "done" | "error" | "waiting") {
+    r.attention = kind;
+    chime(kind);
+    const what = { done: "a terminé", error: "s'est arrêté sur une erreur", waiting: "attend ta réponse" }[kind];
+    toast(`${runName(r)} ${what}.`);
   }
 
   async function pickProject() {
     const dir = await openDialog({ directory: true, multiple: false, title: "Choisir le dossier du projet" });
     if (typeof dir === "string") openProject(dir);
   }
+
+  // ---------- Fermeture de l'app pendant que des runs travaillent ----------
+  let closeAsk = $state<string[] | null>(null);
 
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   function scheduleRefresh() {
@@ -588,9 +745,11 @@
   }
 
   async function refreshFiles() {
-    if (!root) return;
+    const dir = root;
+    if (!dir) return;
     try {
-      const [f, g] = await Promise.all([api.listFiles(root), api.gitStatus(root)]);
+      const [f, g] = await Promise.all([api.listFiles(dir), api.gitStatus(dir)]);
+      if (dir !== root) return; // on a changé de run entre-temps
       files = f;
       git = g;
       refreshKey++;
@@ -631,12 +790,21 @@
   }
 
 
-  session.onFileTouched = (p) => {
-    // Pendant un aperçu, pi peut continuer d'écrire : on garde l'aperçu (il se recharge).
-    if (!pinned && !preview) selected = relPath(p);
-    scheduleRefresh();
-  };
-  session.onShow = (d) => void showPreview(d);
+  /** Branche les rappels de la session d'un run : seuls ceux du run affiché touchent l'explorateur. */
+  function hookRun(r: Run) {
+    r.session.onFileTouched = (p) => {
+      if (r.id !== visibleId) return;
+      // Pendant un aperçu, pi peut continuer d'écrire : on garde l'aperçu (il se recharge).
+      if (!pinned && !preview) selected = relPath(p);
+      scheduleRefresh();
+    };
+    r.session.onShow = (d) => {
+      if (r.id === visibleId) void showPreview(d);
+    };
+  }
+  $effect(() => {
+    for (const r of runs) if (!r.session.onShow) hookRun(r);
+  });
 
   // ---------- Voix ----------
 
@@ -703,25 +871,26 @@
 
   // ---------- Envoi à pi ----------
 
-  /** Envoie un texte à pi : consigne en cours de route s'il travaille, nouvelle demande sinon. */
-  async function sendToPi(text: string) {
-    if (!piUp) return toast("pi n'est pas démarré : ouvre un projet d'abord.");
+  /** Envoie un texte au pi d'un run : consigne en cours de route s'il travaille, nouvelle demande sinon. */
+  async function sendToPi(r: Run | null, text: string) {
+    if (!r?.piUp) return toast("pi n'est pas démarré : ouvre un projet d'abord.");
     try {
-      if (session.busy) await api.piSend({ type: "prompt", message: text, streamingBehavior: "steer" });
+      if (r.session.busy) await r.send({ type: "prompt", message: text, streamingBehavior: "steer" });
       else {
-        const r = await api.piSend({ type: "prompt", message: text });
-        if (r && r.success === false) toast(r.error ?? "pi a refusé la demande");
+        const res = await r.send({ type: "prompt", message: text });
+        if (res && res.success === false) toast(res.error ?? "pi a refusé la demande");
       }
     } catch (e) {
       toast(String(e));
     }
   }
 
-  /** Arrête pi sans couper la voix (l'agent vocal est peut-être en train de le dire). */
-  async function stopPi() {
+  /** Arrête le pi d'un run sans couper la voix (l'agent vocal est peut-être en train de le dire). */
+  async function stopPi(r: Run | null) {
+    if (!r) return;
     try {
-      await api.piSend({ type: "clear_queue" });
-      await api.piSend({ type: "abort" });
+      await r.send({ type: "clear_queue" });
+      await r.send({ type: "abort" });
     } catch (e) {
       toast(String(e));
     }
@@ -751,10 +920,10 @@
       const ask = agentPending && agentAsked ? `${agentAsked} ${text}` : text;
       agentAsked = ask;
       agentPending = true;
-      await api.voiceAgentAsk(ask, session.summary(), modelKey);
+      if (run) await api.voiceAgentAsk(run.id, ask, session.summary(), modelKey);
       return;
     }
-    if (!piUp) {
+    if (!run || !piUp) {
       toast("pi n'est pas démarré : ouvre un projet d'abord.");
       return;
     }
@@ -774,10 +943,10 @@
       }
       if (session.busy) {
         if (STOP_WORDS.test(text) && !attachments.length) return abort();
-        await api.piSend({ type: "prompt", ...withAttachments(text), streamingBehavior: "steer" });
+        await run.send({ type: "prompt", ...withAttachments(text), streamingBehavior: "steer" });
       } else {
         if (STOP_WORDS.test(text) && !attachments.length) return;
-        const r = await api.piSend({ type: "prompt", ...withAttachments(text) });
+        const r = await run.send({ type: "prompt", ...withAttachments(text) });
         if (r && r.success === false) toast(r.error ?? "pi a refusé la demande");
       }
     } catch (e) {
@@ -789,8 +958,7 @@
   async function abort() {
     try {
       await api.stopSpeaking();
-      await api.piSend({ type: "clear_queue" });
-      await api.piSend({ type: "abort" });
+      await stopPi(run);
     } catch (e) {
       toast(String(e));
     }
@@ -800,18 +968,35 @@
 
   onMount(() => {
     const unlisten = [
-      on<any>("pi-event", (ev) => {
-        if (ev.type === "extension_ui_request") return onExtensionUi(ev);
-        session.handle(ev);
-        if (ev.type === "agent_settled") refreshSessions().then(maybeTitle);
-        else if (ev.type === "session_info_changed") refreshSessions();
+      on<{ run: string; event: any }>("pi-event", ({ run: id, event: ev }) => {
+        const r = runs.find((x) => x.id === id);
+        if (!r) return;
+        if (ev.type === "extension_ui_request") return onExtensionUi(r, ev);
+        r.session.handle(ev);
+        if (ev.type === "agent_settled") {
+          refreshSessions(r).then(() => maybeTitle(r));
+          if (r.id !== visibleId) {
+            // Fini en arrière-plan : son résumé oral attend qu'on revienne sur lui.
+            const last = [...r.session.items].reverse().find((i) => i.kind === "assistant");
+            const failed = last?.kind === "assistant" && !!last.error;
+            if (last?.kind === "assistant") {
+              const t = last.blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
+              r.pendingOral = splitOral(t).oral || null;
+            }
+            if (!ev.aborted) notifyBackground(r, failed ? "error" : "done");
+          }
+        } else if (ev.type === "session_info_changed") refreshSessions(r);
       }),
-      on<{ code: string; stderr: string }>("pi-exit", ({ code, stderr }) => {
-        piUp = false;
-        session.busy = false;
+      on<{ run: string; code: string; stderr: string }>("pi-exit", ({ run: id, code, stderr }) => {
+        const r = runs.find((x) => x.id === id);
+        if (!r) return;
+        r.piUp = false;
+        r.session.busy = false;
         const why = stderr?.trim().split("\n").pop();
-        session.notice(`pi s'est arrêté (${code})${why ? ` : ${why}` : ""}. Clique sur la pastille du modèle pour le relancer.`, "warn");
+        r.session.notice(`pi s'est arrêté (${code})${why ? ` : ${why}` : ""}. Clique sur la pastille du modèle pour le relancer.`, "warn");
+        if (r.id !== visibleId) notifyBackground(r, "error");
       }),
+      on<string[]>("close-requested", (ids) => (closeAsk = ids)),
       on<AudioLevels>("audio-levels", (l) => (levels = l)),
       on<boolean>("voice-speaking", (s) => (speaking = s)),
       on<boolean>("voice-listening", (l) => (listening = l)),
@@ -839,38 +1024,56 @@
         if (paths.some((p) => !p.startsWith(".git/"))) previewKey++;
         scheduleRefresh();
       }),
-      on<{ kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
+      on<{ run: string; kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
+        // La réponse va au run à qui la phrase était adressée, même si on a changé de projet depuis.
+        const target = runs.find((x) => x.id === e.run) ?? null;
         if (e.kind === "action") {
           agentPending = false;
           const asked = agentAsked;
           let instruction = e.instruction || asked;
           // Consigne bien plus longue que ce que tu as dit : l'agent a brodé, on envoie tes mots.
           if (wordCount(instruction) > Math.max(2 * wordCount(asked), wordCount(asked) + 12)) instruction = asked;
-          if (e.action === "transmettre") sendToPi(instruction);
-          else if (e.action === "arreter") stopPi();
+          if (e.action === "transmettre") sendToPi(target, instruction);
+          else if (e.action === "arreter") stopPi(target);
           if (e.action !== "repondre") pendingAction = e.action ?? null;
         } else if (e.kind === "reply") {
-          if (e.text) session.voice("agent", e.text, pendingAction ?? undefined);
+          if (e.text) target?.session.voice("agent", e.text, pendingAction ?? undefined);
           pendingAction = null;
         } else if (e.kind === "error") {
           agentPending = false;
           toast(`Agent vocal injoignable (${e.message}) : demande envoyée directement à pi.`);
-          if (e.text) sendToPi(e.text);
+          if (e.text) sendToPi(target, e.text);
         }
       }),
     ];
 
     if (isDemo()) {
       // Navigateur, `?demo` : interface remplie pour juger le design (aucun backend).
-      fillDemo(session);
-      root = "/home/demo/projets/editeur";
-      piUp = true;
+      const demo = new Run("/home/demo/projets/editeur");
+      fillDemo(demo.session);
+      demo.piUp = true;
+      demo.sessions = DEMO_SESSIONS;
+      demo.sessionPath = DEMO_SESSIONS[0].path;
+      demo.session.touched = ["editeur-wysiwyg.html"];
+      demo.modelKey = "harn/qwen3-27b";
+      models = [
+        { key: "harn/qwen3-27b", label: "Qwen3 27B (local)" },
+        { key: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+      ];
+      modelLocal = { "harn/qwen3-27b": true };
+      // Autres runs : un projet qui tourne en arrière-plan sur le même modèle local, une branche.
+      const other = new Run("/home/demo/projets/site-vitrine");
+      other.piUp = true;
+      other.modelKey = "harn/qwen3-27b";
+      other.session.busy = true;
+      const br = new Run("/home/demo/projets/editeur", { path: "/tmp/wt", branch: "pi/export-csv-3f2a", base: "main" }, "Export CSV");
+      br.piUp = true;
+      br.attention = "done";
+      runs = [demo, other, br];
+      visibleId = demo.id;
       sttUp = true;
       files = DEMO_FILES;
       git = DEMO_GIT;
-      sessions = DEMO_SESSIONS;
-      sessionPath = DEMO_SESSIONS[0].path;
-      session.touched = ["editeur-wysiwyg.html"];
       const dq = new URLSearchParams(location.search);
       if (dq.get("draft")) draft = dq.get("draft")!;
       if (dq.has("zen")) zen = true;
@@ -890,7 +1093,7 @@
         { name: "fix-tests", description: "Corriger les tests qui échouent", source: "prompt" },
       ];
       speaking = !dq.has("idle");
-      if (dq.has("idle")) session.busy = false;
+      if (dq.has("idle")) demo.session.busy = false;
       voiceCfg = { sttUrl: "", ttsUrl: "", voice: "estelle", ttsEnabled: true, agentName: "jarvis", voiceAgent: true, agentUrl: "" };
       agent = { name: "Jarvis" };
       const q = new URLSearchParams(location.search).get("settings");
@@ -1051,8 +1254,8 @@
         onChange={updateVoice}
         onClose={() => (showSettings = false)}
         {models}
-        {modelKey}
-        onModel={(k) => setModel(k)}
+        modelKey={defaultModel}
+        onModel={setDefaultModel}
         {agent}
         onAgent={updateAgent}
         {root}
@@ -1071,15 +1274,27 @@
   >
     <aside class="left" class:closed={!layout.left || zenActive}>
       {#if layout.left && !zenActive}
-        <SessionsPanel
-          {sessions}
-          currentPath={sessionPath}
-          busy={session.busy}
-          {agentName}
-          onOpen={openSession}
-          onNew={newSession}
-          onTrash={trashSession}
-        />
+        <div class="left-col">
+          <RunsPanel
+            {runs}
+            {visibleId}
+            name={runName}
+            canParallel={!!run && (git.isRepo || !!run.branch)}
+            onSelect={selectRun}
+            onClose={closeRun}
+            onParallel={startParallel}
+          />
+          <SessionsPanel
+            {sessions}
+            currentPath={sessionPath}
+            busy={session.busy}
+            canParallel={!!run && (git.isRepo || !!run.branch)}
+            {agentName}
+            onOpen={openSession}
+            onNew={newSession}
+            onTrash={trashSession}
+          />
+        </div>
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="resizer right-edge" onpointerdown={(e) => startResize("left", e)}></div>
       {/if}
@@ -1127,6 +1342,18 @@
           />
         {/if}
       </div>
+      {#if !onboarding && !zenActive && run?.branch}
+        {#key run.id}
+          <BranchBar
+            {run}
+            busy={session.busy}
+            refreshKey={refreshKey}
+            {toast}
+            onAskPi={(text) => sendToPi(run, text)}
+            onDone={dropBranchRun}
+          />
+        {/key}
+      {/if}
       {#if !onboarding && !zenActive}
       <Composer
         bind:value={draft}
@@ -1142,6 +1369,11 @@
         {argOptions}
         bind:attachments
         onAttach={pickAttachments}
+        {models}
+        {modelKey}
+        modelShared={modelShared}
+        modelLocal={!!(modelKey && modelLocal[modelKey])}
+        onModel={(k) => run && setModel(run, k)}
       />
       {/if}
     </section>
@@ -1189,7 +1421,7 @@
     project={projectName ?? ""}
     branch={git.branch}
     model={session.model}
-    onRestart={() => root && openProject(root, true)}
+    onRestart={() => run && startRun(run, { resume: true }).catch((e) => toast(String(e)))}
     onSettings={() => (showSettings = true)}
   />
 
@@ -1197,6 +1429,18 @@
     {#key uiRequests[0].id}
       <ExtensionDialog req={uiRequests[0]} onRespond={(r) => respondUi(uiRequests[0], r)} />
     {/key}
+  {/if}
+
+  {#if closeAsk}
+    <ConfirmDialog
+      title="Des travaux sont en cours"
+      message={`${closeAsk.map((id) => runs.find((r) => r.id === id)).filter(Boolean).map((r) => runName(r!)).join(", ") || "Un run"} travaille encore. Quitter arrête ${closeAsk.length > 1 ? "ces travaux" : "ce travail"} en plein milieu.`}
+      confirm="Arrêter et quitter"
+      cancel="Annuler"
+      danger
+      onConfirm={() => api.quitApp()}
+      onCancel={() => (closeAsk = null)}
+    />
   {/if}
 
   {#if dragOver}
@@ -1282,6 +1526,12 @@
   aside {
     position: relative;
     overflow: hidden;
+  }
+  .left-col {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
   }
   aside.closed {
     border: 0 !important;

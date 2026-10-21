@@ -13,7 +13,7 @@ mod voice;
 
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use voice::{VoiceConfig, VoiceEngine};
 
 struct AppState {
@@ -29,35 +29,85 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Ouvre un projet : lance pi dans ce dossier et surveille ses fichiers.
+/// Lance (ou relance) le pi d'un run dans `cwd` (le projet, ou la branche de travail du run).
+/// `session` : fichier de session à reprendre ; `extra_prompt` : consignes propres au run.
 #[tauri::command]
-async fn open_project(
+#[allow(clippy::too_many_arguments)]
+async fn pi_start(
     app: AppHandle,
     state: State<'_, AppState>,
+    run: String,
     cwd: String,
     agent_name: Option<String>,
     resume: Option<bool>,
+    session: Option<String>,
+    extra_prompt: Option<String>,
 ) -> Res<()> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("Le dossier « {cwd} » n'existe pas. Ouvre un projet avec Ctrl+O."));
     }
     let voice = state.voice.clone();
-    let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(ev));
-    state.pi.start(app.clone(), cwd.clone(), agent_name, resume.unwrap_or(false), hook).await.map_err(err)?;
+    let id = run.clone();
+    let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(&id, ev));
+    state.pi.start(app, run, cwd, agent_name, resume.unwrap_or(false), session, extra_prompt, hook).await.map_err(err)
+}
+
+/// Arrête le pi d'un run.
+#[tauri::command]
+async fn pi_stop(state: State<'_, AppState>, run: String) -> Res<()> {
+    state.pi.stop(&run).await;
+    Ok(())
+}
+
+/// Surveille les fichiers du dossier affiché (celui du run visible).
+#[tauri::command]
+fn watch_dir(app: AppHandle, state: State<'_, AppState>, cwd: String) -> Res<()> {
     let w = files::watch(app, &cwd).map_err(err)?;
     *state.watcher.lock().unwrap() = Some(w);
     Ok(())
 }
 
 #[tauri::command]
-async fn pi_send(state: State<'_, AppState>, cmd: Value) -> Res<Value> {
-    state.pi.send(cmd).await.map_err(err)
+async fn pi_send(state: State<'_, AppState>, run: String, cmd: Value) -> Res<Value> {
+    state.pi.send(&run, cmd).await.map_err(err)
 }
 
 /// Réponse à un dialogue d'extension de pi (pas de réponse attendue en retour).
 #[tauri::command]
-async fn pi_write(state: State<'_, AppState>, record: Value) -> Res<()> {
-    state.pi.write(record).await.map_err(err)
+async fn pi_write(state: State<'_, AppState>, run: String, record: Value) -> Res<()> {
+    state.pi.write(&run, record).await.map_err(err)
+}
+
+/// Run affiché : le seul qui parle à voix haute.
+#[tauri::command]
+fn voice_set_active_run(state: State<'_, AppState>, run: String) {
+    state.voice.set_active_run(&run);
+}
+
+/// Quitter pour de bon (après confirmation quand des runs travaillent).
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+fn worktree_create(root: String, label: String) -> Res<files::Worktree> {
+    files::worktree_create(&root, &label).map_err(err)
+}
+
+#[tauri::command]
+fn worktree_info(root: String, path: String, branch: String, base: String) -> Res<files::WorktreeInfo> {
+    files::worktree_info(&root, &path, &branch, &base).map_err(err)
+}
+
+#[tauri::command]
+fn worktree_merge(root: String, path: String, branch: String, message: String) -> Res<files::MergeOutcome> {
+    files::worktree_merge(&root, &path, &branch, &message).map_err(err)
+}
+
+#[tauri::command]
+fn worktree_remove(root: String, path: String, branch: String, delete_branch: bool) -> Res<()> {
+    files::worktree_remove(&root, &path, &branch, delete_branch).map_err(err)
 }
 
 #[tauri::command]
@@ -77,13 +127,13 @@ fn voice_speak(state: State<'_, AppState>, text: String) {
 
 /// Agent vocal : ce que tu viens de dire, avec l'état de pi vu par l'interface.
 #[tauri::command]
-fn voice_agent_ask(state: State<'_, AppState>, text: String, pi_state: String, pi_model: Option<String>) {
-    state.voice.agent_ask(text, pi_state, pi_model);
+fn voice_agent_ask(state: State<'_, AppState>, run: String, text: String, pi_state: String, pi_model: Option<String>) {
+    state.voice.agent_ask(run, text, pi_state, pi_model);
 }
 
 #[tauri::command]
-fn voice_agent_reset(state: State<'_, AppState>) {
-    state.voice.agent_reset();
+fn voice_agent_reset(state: State<'_, AppState>, run: Option<String>) {
+    state.voice.agent_reset(run.as_deref());
 }
 
 #[tauri::command]
@@ -360,10 +410,30 @@ pub fn run() {
             app.manage(AppState { pi: pi::PiManager::new(), terms: term::Terms::default(), voice, watcher: Mutex::new(None) });
             Ok(())
         })
+        // Fermer la fenêtre pendant que des runs travaillent : l'interface demande confirmation
+        // (puis appelle quit_app). Suivi côté Rust : même une interface plantée n'empêche pas de
+        // fermer quand rien ne tourne.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let busy = window.state::<AppState>().pi.busy_runs();
+                if !busy.is_empty() {
+                    api.prevent_close();
+                    let _ = window.emit("close-requested", busy);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            open_project,
+            pi_start,
+            pi_stop,
+            watch_dir,
             pi_send,
             pi_write,
+            voice_set_active_run,
+            quit_app,
+            worktree_create,
+            worktree_info,
+            worktree_merge,
+            worktree_remove,
             voice_listen,
             voice_stop_speaking,
             voice_speak,

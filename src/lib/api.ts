@@ -46,19 +46,31 @@ export type AudioLevels = {
 };
 
 export const api = {
-  openProject: (cwd: string, agentName: string | null, resume = false) =>
-    invoke<void>("open_project", { cwd, agentName, resume }),
+  /** Lance (ou relance) le pi d'un run. `session` : fichier de session à reprendre. */
+  piStart: (run: string, cwd: string, agentName: string | null, opts: { resume?: boolean; session?: string | null; extraPrompt?: string | null } = {}) =>
+    invoke<void>("pi_start", { run, cwd, agentName, resume: opts.resume ?? false, session: opts.session ?? null, extraPrompt: opts.extraPrompt ?? null }),
+  piStop: (run: string) => invoke<void>("pi_stop", { run }),
+  watchDir: (cwd: string) => invoke<void>("watch_dir", { cwd }),
+  voiceSetActiveRun: (run: string) => invoke<void>("voice_set_active_run", { run }),
+  quitApp: () => invoke<void>("quit_app"),
+  worktreeCreate: (root: string, label: string) => invoke<{ path: string; branch: string; base: string }>("worktree_create", { root, label }),
+  worktreeInfo: (root: string, path: string, branch: string, base: string) =>
+    invoke<{ ahead: number; dirty: boolean; exists: boolean }>("worktree_info", { root, path, branch, base }),
+  worktreeMerge: (root: string, path: string, branch: string, message: string) =>
+    invoke<{ merged: boolean; conflicts: string[] }>("worktree_merge", { root, path, branch, message }),
+  worktreeRemove: (root: string, path: string, branch: string, deleteBranch: boolean) =>
+    invoke<void>("worktree_remove", { root, path, branch, deleteBranch }),
   readPrompt: (scope: "global" | "project", root: string | null) => invoke<PromptFile>("read_prompt", { scope, root }),
   writePrompt: (scope: "global" | "project", root: string | null, content: string) =>
     invoke<void>("write_prompt", { scope, root, content }),
-  piSend: (cmd: Record<string, unknown>) => invoke<any>("pi_send", { cmd }),
-  piWrite: (record: Record<string, unknown>) => invoke<void>("pi_write", { record }),
+  piSend: (run: string, cmd: Record<string, unknown>) => invoke<any>("pi_send", { run, cmd }),
+  piWrite: (run: string, record: Record<string, unknown>) => invoke<void>("pi_write", { run, record }),
   listen: (on: boolean, submit = false) => invoke<void>("voice_listen", { on, submit }),
   stopSpeaking: () => invoke<void>("voice_stop_speaking"),
   speak: (text: string) => invoke<void>("voice_speak", { text }),
-  voiceAgentAsk: (text: string, piState: string, piModel: string | null) =>
-    invoke<void>("voice_agent_ask", { text, piState, piModel }),
-  voiceAgentReset: () => invoke<void>("voice_agent_reset"),
+  voiceAgentAsk: (run: string, text: string, piState: string, piModel: string | null) =>
+    invoke<void>("voice_agent_ask", { run, text, piState, piModel }),
+  voiceAgentReset: (run: string | null = null) => invoke<void>("voice_agent_reset", { run }),
   getVoiceConfig: () => invoke<VoiceConfig>("voice_get_config"),
   setVoiceConfig: (config: VoiceConfig) => invoke<void>("voice_set_config", { config }),
   sttConnected: () => invoke<boolean>("voice_stt_connected"),
