@@ -2,11 +2,11 @@
 
 Surcouche vocale pour [pi](https://github.com/earendil-works/pi), un agent de code. Tu lui parles, tu vois ton texte s'écrire en direct, pi travaille juste à côté, puis il te répond à voix haute. Un égaliseur s'anime pendant qu'il parle, et `Espace` lui coupe la parole à tout moment.
 
-![Conversation avec l'agent, sessions à gauche, diff coloré du fichier modifié à droite](docs/screenshots/conversation-diff.png)
+![Conversation avec l'agent : sessions à gauche, fichiers du projet à droite](docs/screenshots/conversation.png)
 
-| Apparence : mode, visualisation de la voix, palettes | Voix : choix de la voix, lecture vocale, agent vocal |
-|---|---|
-| ![Réglages, onglet Apparence](docs/screenshots/apparence.png) | ![Réglages, onglet Voix](docs/screenshots/voix.png) |
+| Agent : nom, modèle, fournisseurs, prompt système | Voix : choix de la voix, lecture vocale, agent vocal | Apparence : mode, visualisation de la voix, palettes |
+|---|---|---|
+| ![Réglages, onglet Agent](docs/screenshots/agent.png) | ![Réglages, onglet Voix](docs/screenshots/voix.png) | ![Réglages, onglet Apparence](docs/screenshots/apparence.png) |
 
 Tout est open source et tourne en local. Seul le modèle de langage reste celui que pi utilise déjà.
 
