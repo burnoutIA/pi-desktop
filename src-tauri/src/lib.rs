@@ -1,8 +1,10 @@
 #[macro_use]
 mod applog;
 mod audio;
+mod browser;
 mod files;
 mod pi;
+mod preview;
 mod servers;
 mod sessions;
 mod speech;
@@ -188,11 +190,12 @@ struct PiStatus {
     version: Option<String>,
 }
 
-/// Le pi de l'app (runtime/pi) est-il installé ?
+/// Le pi de l'app (runtime/pi) et ses outils (ketch, Playwright) sont-ils installés ?
 #[tauri::command]
 fn pi_status() -> PiStatus {
     match pi::pi_version() {
-        Some((path, version)) => PiStatus { installed: true, path: Some(path), version: Some(version) },
+        // Un pi imposé par PI_BIN se passe des outils de runtime/.
+        Some((path, version)) => PiStatus { installed: pi::tools_installed() || std::env::var("PI_BIN").is_ok(), path: Some(path), version: Some(version) },
         None => PiStatus { installed: false, path: None, version: None },
     }
 }
@@ -287,6 +290,48 @@ fn bench_mode() -> bool {
     std::env::var("PIVOICE_BENCH").is_ok_and(|v| v == "1")
 }
 
+/// Adresse de l'aperçu d'un fichier local (page HTML, image…), servie par le serveur local.
+#[tauri::command]
+async fn preview_url(root: String, path: String) -> Res<String> {
+    preview::url_for(&root, &path).await.map_err(err)
+}
+
+// Async : add_child attend le fil principal, une commande synchrone y tourne déjà (blocage).
+#[tauri::command]
+async fn browser_show(app: AppHandle, url: String, bounds: browser::Bounds) -> Res<()> {
+    browser::show(&app, &url, bounds).map_err(err)
+}
+
+#[tauri::command]
+async fn browser_bounds(app: AppHandle, bounds: browser::Bounds) -> Res<()> {
+    browser::bounds(&app, bounds).map_err(err)
+}
+
+#[tauri::command]
+async fn browser_hide(app: AppHandle) -> Res<()> {
+    browser::hide(&app).map_err(err)
+}
+
+#[tauri::command]
+async fn browser_close(app: AppHandle) -> Res<()> {
+    browser::close(&app).map_err(err)
+}
+
+#[tauri::command]
+async fn browser_reload(app: AppHandle) -> Res<()> {
+    browser::reload(&app).map_err(err)
+}
+
+/// Ouvre une adresse web ou un fichier dans le programme par défaut (navigateur…).
+#[tauri::command]
+fn open_external(target: String) -> Res<()> {
+    let ok = target.starts_with("http://") || target.starts_with("https://") || std::path::Path::new(&target).exists();
+    if !ok {
+        return Err(format!("impossible d'ouvrir {target}"));
+    }
+    std::process::Command::new("xdg-open").arg(&target).spawn().map(|_| ()).map_err(err)
+}
+
 #[tauri::command]
 fn initial_dir() -> Option<String> {
     std::env::args().nth(1).or_else(|| std::env::var("PI_DESKTOP_CWD").ok())
@@ -333,6 +378,13 @@ pub fn run() {
             read_file,
             git_init,
             initial_dir,
+            preview_url,
+            open_external,
+            browser_show,
+            browser_bounds,
+            browser_hide,
+            browser_close,
+            browser_reload,
             log_frontend,
             read_prompt,
             write_prompt,

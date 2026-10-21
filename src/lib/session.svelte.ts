@@ -50,6 +50,8 @@ export class Session {
   /** Fichiers modifiés par pi pendant cette session (chemins tels que donnés à l'outil). */
   touched = $state<string[]>([]);
   onFileTouched: ((path: string) => void) | null = null;
+  /** pi montre quelque chose (outil show_preview de l'extension preview) : `details` de son résultat. */
+  onShow: ((d: { kind: "url" | "file" | "dir"; target: string; title: string | null }) => void) | null = null;
 
   private current: Extract<Item, { kind: "assistant" }> | null = null;
 
@@ -218,6 +220,8 @@ export class Session {
         }
         const p = toolPath(t?.args);
         if (p && t && FILE_TOOLS.has(t.name.toLowerCase())) this.onFileTouched?.(p);
+        const shown = ev.result?.details;
+        if (t?.name === "show_preview" && !ev.isError && typeof shown?.target === "string") this.onShow?.(shown);
         break;
       }
       case "queue_update":

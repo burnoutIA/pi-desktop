@@ -3,6 +3,8 @@
   import type { GitStatusKind } from "../lib/api";
   import FileTree from "./FileTree.svelte";
   import DiffView from "./DiffView.svelte";
+  import PreviewPane from "./PreviewPane.svelte";
+  import type { Preview } from "../lib/preview";
 
   type Props = {
     root: string;
@@ -12,13 +14,29 @@
     isRepo: boolean;
     branch: string | null;
     selected: string | null;
+    preview: Preview | null;
+    /** Un fichier du projet a changé : l'aperçu d'un fichier local se recharge. */
+    previewKey: number;
+    /** Une fenêtre de l'interface passe par-dessus le panneau (réglages, dialogue…). */
+    covered: boolean;
     refreshKey: number;
     onSelect: (path: string) => void;
+    onClosePreview: () => void;
+    onCode: (path: string) => void;
     onBack: () => void;
     onInitGit: () => void;
   };
-  let { root, files, status, touched, isRepo, branch, selected, refreshKey, onSelect, onBack, onInitGit }: Props =
-    $props();
+  let {
+    root, files, status, touched, isRepo, branch, selected, preview, previewKey, covered, refreshKey,
+    onSelect, onClosePreview, onCode, onBack, onInitGit,
+  }: Props = $props();
+
+  // Fichier de l'aperçu, relatif au projet s'il en fait partie (pour le bouton « Code »).
+  const previewRel = $derived(
+    preview && preview.kind === "file" && root && preview.target.startsWith(root + "/")
+      ? preview.target.slice(root.length + 1)
+      : null,
+  );
 
   let tab = $state<"files" | "changes">((localStorage.getItem("explorerTab") as "files" | "changes") ?? "changes");
   $effect(() => localStorage.setItem("explorerTab", tab));
@@ -27,7 +45,9 @@
 </script>
 
 <div class="explorer">
-  {#if selected}
+  {#if preview}
+    <PreviewPane {preview} {covered} refreshKey={previewKey} relPath={previewRel} onClose={onClosePreview} {onCode} />
+  {:else if selected}
     <DiffView {root} path={selected} status={status[selected]} {isRepo} {refreshKey} {onInitGit} {onBack} />
   {:else}
     <div class="tabs">

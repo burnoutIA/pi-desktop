@@ -122,6 +122,94 @@ pub fn init_agent_dir() {
         }
     }
     std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+    if let Err(e) = write_mcp_config(&dir) {
+        applog!("config MCP de pi : {e:#}");
+    }
+}
+
+/// Extensions de pi propres à l'app (dossier `pi-extensions/` du projet), passées avec `--extension`.
+fn app_extensions() -> Vec<String> {
+    let Some(dir) = crate::servers::project_root().map(|r| r.join("pi-extensions")) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let mut files: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "ts")).collect();
+    files.sort();
+    files.into_iter().flat_map(|p| ["--extension".to_string(), p.to_string_lossy().into_owned()]).collect()
+}
+
+/// Outils installés avec pi par `scripts/setup-pi.sh` : (ketch, serveur MCP de Playwright).
+fn tool_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let rt = crate::servers::project_root()?.join("runtime");
+    Some((rt.join("ketch/ketch"), rt.join("playwright/node_modules/.bin/playwright-mcp")))
+}
+
+/// Les outils de pi sont-ils tous installés ? Sinon l'assistant de démarrage relance l'installation.
+pub fn tools_installed() -> bool {
+    tool_paths().is_some_and(|(k, p)| k.is_file() && p.is_file())
+}
+
+/// Branche les outils de l'app dans `<agent-dir>/mcp.json` : ketch (recherche web) et Playwright
+/// (navigateur). Réécrit à chaque démarrage, sans toucher aux autres serveurs du fichier.
+fn write_mcp_config(dir: &std::path::Path) -> Result<()> {
+    let (ketch, playwright) = tool_paths().ok_or_else(|| anyhow!("dossier du projet introuvable"))?;
+    let data = dir.parent().unwrap_or(dir);
+    let file = dir.join("mcp.json");
+    let mut config: Value = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    if !config.is_object() {
+        config = json!({});
+    }
+    if !config["mcpServers"].is_object() {
+        config["mcpServers"] = json!({});
+    }
+    let servers = config["mcpServers"].as_object_mut().unwrap();
+    servers.remove("ketch");
+    servers.remove("playwright");
+    if ketch.is_file() {
+        // Config et marque-pages de ketch isolés dans data/ketch, comme harn.
+        let kdir = data.join("ketch");
+        std::fs::create_dir_all(&kdir)?;
+        servers.insert(
+            "ketch".into(),
+            json!({
+                "command": ketch,
+                "args": ["mcp", "serve"],
+                "env": {
+                    "KETCH_CONFIG": kdir.join("config.json"),
+                    "KETCH_TAGS_PATH": kdir.join("tags.db"),
+                },
+                "timeout": 120,
+                "exposure": "direct",
+                "toolExposure": { "crawl": "hidden", "tag": "hidden" },
+                "description": "Recherche web, documentation de librairies, code open source et lecture de pages web (ketch, sans clé API).",
+            }),
+        );
+    }
+    if playwright.is_file() {
+        // Navigateur visible : la personne voit pi naviguer et peut cliquer ou taper dans sa
+        // fenêtre. Profil gardé dans data/playwright/profile (une connexion faite pour pi le reste).
+        // Beaucoup d'outils : chargés à la demande (tool_search) pour ne pas alourdir le prompt.
+        servers.insert(
+            "playwright".into(),
+            json!({
+                "command": playwright,
+                "args": [
+                    "--browser", "chromium",
+                    "--user-data-dir", data.join("playwright/profile"),
+                    "--output-dir", data.join("playwright"),
+                ],
+                "timeout": 120,
+                "exposure": "deferred",
+                "description": "Navigateur web piloté (Playwright) : ouvrir une page, cliquer, remplir un formulaire, faire une capture, tester une interface. Il s'ouvre dans une fenêtre visible : la personne voit ce que fait pi et peut y cliquer ou taper.",
+            }),
+        );
+    }
+    if config.get("autoEnableCodemode").is_none() {
+        config["autoEnableCodemode"] = json!(false);
+    }
+    std::fs::write(&file, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
 }
 
 fn pi_binary() -> String {
@@ -175,6 +263,7 @@ impl PiManager {
             .env("PATH", extended_path())
             .args(["--mode", "rpc", "--append-system-prompt", &voice_prompt(agent_name.as_deref())])
             .args(resume.then_some("--continue"))
+            .args(app_extensions())
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

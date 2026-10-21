@@ -81,9 +81,19 @@ export const api = {
   termResize: (id: number, cols: number, rows: number) => invoke<void>("term_resize", { id, cols, rows }),
   termKill: (id: number) => invoke<void>("term_kill", { id }),
   readAttachment: (path: string) => invoke<Attachment>("read_attachment", { path }),
+  previewUrl: (root: string, path: string) => invoke<string>("preview_url", { root, path }),
+  browserShow: (url: string, bounds: Bounds) => invoke<void>("browser_show", { url, bounds }),
+  browserBounds: (bounds: Bounds) => invoke<void>("browser_bounds", { bounds }),
+  browserHide: () => invoke<void>("browser_hide"),
+  browserClose: () => invoke<void>("browser_close"),
+  browserReload: () => invoke<void>("browser_reload"),
+  openExternal: (target: string) => invoke<void>("open_external", { target }),
   benchMode: () => invoke<boolean>("bench_mode"),
   log: (msg: string) => invoke<void>("log_frontend", { msg }).catch(() => {}),
 };
+
+/** Place d'un élément dans la fenêtre, en pixels CSS. */
+export type Bounds = { x: number; y: number; width: number; height: number };
 
 export function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => cb(e.payload));

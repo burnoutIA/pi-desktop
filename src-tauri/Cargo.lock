@@ -2669,6 +2669,7 @@ dependencies = [
  "base64 0.23.1",
  "cpal",
  "futures-util",
+ "gtk",
  "ignore",
  "notify-debouncer-mini",
  "portable-pty",
@@ -2682,6 +2683,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tokio",
  "tokio-tungstenite",
+ "webkit2gtk",
 ]
 
 [[package]]

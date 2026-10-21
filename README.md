@@ -36,7 +36,11 @@ Pour la voix, il faut seulement `uv` : la transcription et la synthèse tournent
 
 Pi Voice a son propre pi, comme harn : il n'utilise jamais le pi installé sur la machine.
 
-- `runtime/pi` : `@earendil-works/pi-coding-agent`, version fixée dans `scripts/setup-pi.sh`. L'assistant de démarrage lance ce script ; pour monter de version, change `PI_VERSION` et relance-le.
+- `runtime/pi` : `@earendil-works/pi-coding-agent`.
+- Deux outils, branchés à pi comme serveurs MCP (`data/pi-agent/mcp.json`, réécrit à chaque démarrage de l'app) :
+  - `runtime/ketch` : [ketch](https://github.com/1broseidon/ketch), recherche web, docs de librairies, code open source et lecture de pages, sans clé API. Sa config est dans `data/ketch`.
+  - `runtime/playwright` : [Playwright MCP](https://github.com/microsoft/playwright-mcp), un Chromium que pi pilote (ouvrir une page, cliquer, capturer…). Il s'ouvre dans une fenêtre visible : tu vois pi naviguer et tu peux cliquer ou taper dedans pour l'aider (connexion, captcha…). Son profil est gardé dans `data/playwright/profile`. Ses outils sont chargés à la demande. Les captures vont dans `data/playwright`, le navigateur dans `~/.cache/ms-playwright`.
+- Les versions sont fixées en tête de `scripts/setup-pi.sh`, que lance l'assistant de démarrage. Pour en changer, modifie-les et relance le script : ce qui est déjà à jour est sauté.
 - `data/pi-agent` : sa config (connexion, modèles, sessions), transmise à pi par `PI_CODING_AGENT_DIR`. À sa création, l'app y copie `auth.json`, `models.json` et `settings.json` depuis `~/.pi/agent` s'ils existent ; les sessions ne sont pas reprises.
 
 Les deux dossiers sont ignorés par git. `PI_BIN` et `PI_CODING_AGENT_DIR` permettent d'imposer un autre pi ou une autre config.
@@ -66,6 +70,7 @@ Pour vérifier la voix seule : `uv run scripts/test-voice.py`. Il fait dire une 
 - Dire **« stop »** (ou « arrête ») ou appuyer sur `Ctrl+.` arrête pi net.
 - `Échap` coupe la voix, annule l'envoi automatique ou ferme le micro.
 - `Ctrl+O` ouvre un autre projet.
+- **Aperçu** : quand pi fait quelque chose de visuel (page HTML, image, appli web), il te le montre dans le panneau de droite (outil `show_preview`, extension `pi-extensions/preview.ts`). Une adresse web (appli lancée sur `http://localhost:…`, site) s'ouvre dans un vrai navigateur posé sur le panneau (`browser.rs`, vue WebKitGTK), qui affiche aussi les pages qui refusent d'être intégrées ; une page HTML locale passe par un petit serveur intégré. Un clic sur une image, un `.html` ou un `.pdf` de l'arbre l'ouvre aussi en aperçu ; « Code » montre son diff, `Échap` ferme l'aperçu.
 - **À gauche**, l'arbre des fichiers avec leur état git. Un point lumineux marque les fichiers que pi a touchés pendant la session.
 - **À droite**, le diff du fichier par rapport au dernier commit. Il suit automatiquement le dernier fichier modifié par pi, sauf si tu en as ouvert un toi-même.
 
@@ -92,7 +97,10 @@ src-tauri/src/
   voice/agent.rs         Agent vocal : répond, transmet à pi ou l'arrête
   speech.rs              Extraction du bloc <oral> pendant le streaming
   audio.rs               Micro et haut-parleur (cpal), rééchantillonnage, FFT de l'égaliseur
+  browser.rs             Navigateur de l'aperçu : vue WebKitGTK en calque sur le panneau
+  preview.rs             Serveur local de l'aperçu (127.0.0.1, dossiers confiés seulement)
   files.rs               Arbre (.gitignore respecté), git status, diff, surveillance du dossier
+pi-extensions/           Extensions de pi chargées par l'app (--extension) : preview.ts (show_preview)
 scripts/voice-server.sh  Lance la transcription (8090) et la synthèse (8089)
 scripts/parakeet-stt-server.py  Transcription Parakeet, au protocole du STT Kyutai
 scripts/pocket-tts-server.py    Synthèse Pocket TTS, au protocole du TTS Kyutai

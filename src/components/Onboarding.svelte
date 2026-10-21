@@ -46,13 +46,14 @@
       <li class:done={step === "login"} class:active={step === "install"}>
         <span class="num">{step === "login" ? "✓" : "1"}</span>
         <div>
-          <div class="st-title">Installer pi</div>
+          <div class="st-title">Installer pi et ses outils</div>
           <div class="st-desc">
             {#if step === "login"}
               Installé{piVersion ? ` (version ${piVersion})` : ""}.
             {:else}
-              Pi Voice installe sa propre copie de pi avec npm, sans toucher à un pi déjà installé sur ta
-              machine. Il faut Node.js 22 ou plus.
+              Pi Voice installe sa propre copie de pi, sans toucher à un pi déjà installé sur ta machine, avec
+              deux outils : ketch pour chercher sur internet et Playwright pour piloter un navigateur. Il faut
+              Node.js 22 ou plus.
             {/if}
           </div>
         </div>

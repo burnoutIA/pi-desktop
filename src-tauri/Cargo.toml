@@ -28,3 +28,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 
 [build-dependencies]
 tauri-build = { version = "2.7.3", features = [] }
+
+# Navigateur de l'aperçu (browser.rs) : vue WebKitGTK posée en calque sur la fenêtre.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = "2.0"

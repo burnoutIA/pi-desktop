@@ -25,6 +25,7 @@
   import Conversation from "./components/Conversation.svelte";
   import Composer from "./components/Composer.svelte";
   import Explorer from "./components/Explorer.svelte";
+  import { isPreviewable, type Preview } from "./lib/preview";
   import SessionsPanel from "./components/SessionsPanel.svelte";
   import Settings from "./components/Settings.svelte";
   import StatusBar from "./components/StatusBar.svelte";
@@ -42,8 +43,12 @@
   let files = $state<string[]>([]);
   let git = $state<GitStatus>({ isRepo: false, branch: null, files: [] });
   let selected = $state<string | null>(null);
+  /** Panneau d'aperçu (page, appli lancée, image) : prioritaire sur le diff tant qu'il est ouvert. */
+  let preview = $state<Preview | null>(null);
   let pinned = $state(false); // l'utilisateur a choisi un fichier : on ne suit plus pi automatiquement
   let refreshKey = $state(0);
+  /** Change seulement quand un vrai fichier du projet change (pas git) : recharge l'aperçu local. */
+  let previewKey = $state(0);
 
   let levels = $state<AudioLevels>({ out: [], in: [], outRms: 0, inRms: 0 });
   let speaking = $state(false);
@@ -73,6 +78,10 @@
 
   function startResize(side: "left" | "right", e: PointerEvent) {
     e.preventDefault();
+    // Le pointeur reste à la poignée pendant tout le glissement, même au-dessus de la page de
+    // l'aperçu (une iframe garderait sinon les mouvements pour elle).
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
     const x0 = e.clientX;
     const w0 = side === "left" ? layout.leftW : layout.rightW;
     const move = (ev: PointerEvent) => {
@@ -81,13 +90,15 @@
       else layout.rightW = Math.min(Math.round(window.innerWidth * 0.6), Math.max(300, w0 - dx));
     };
     const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("lostpointercapture", up);
       document.body.classList.remove("resizing");
     };
     document.body.classList.add("resizing");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("lostpointercapture", up);
   }
 
   // ---------- Sessions de pi dans ce dossier ----------
@@ -545,6 +556,7 @@
       if (!resume) {
         session.reset();
         selected = null;
+        preview = null;
         pinned = false;
       }
       root = dir;
@@ -588,14 +600,43 @@
   }
 
   function selectFile(p: string) {
+    if (root && isPreviewable(p)) {
+      void showPreview({ kind: "file", target: `${root}/${p}`, title: null });
+      return;
+    }
+    openCode(p);
+  }
+
+  /** Le diff / code d'un fichier, même s'il est prévisualisable (bouton « Code » de l'aperçu). */
+  function openCode(p: string) {
+    preview = null;
     selected = p;
     pinned = true;
   }
 
+  async function showPreview(d: { kind: Preview["kind"]; target: string; title: string | null }) {
+    try {
+      const url = d.kind === "url" ? d.target : await api.previewUrl(root, d.target);
+      preview = { ...d, url };
+      selected = null;
+      layout.right = true;
+    } catch (e) {
+      toast(`Aperçu impossible : ${e}`);
+    }
+  }
+
+  function closePreview() {
+    preview = null;
+    pinned = false;
+  }
+
+
   session.onFileTouched = (p) => {
-    if (!pinned) selected = relPath(p);
+    // Pendant un aperçu, pi peut continuer d'écrire : on garde l'aperçu (il se recharge).
+    if (!pinned && !preview) selected = relPath(p);
     scheduleRefresh();
   };
+  session.onShow = (d) => void showPreview(d);
 
   // ---------- Voix ----------
 
@@ -640,6 +681,7 @@
     if (countdown !== null) return cancelAuto();
     if (speaking) return void api.stopSpeaking();
     if (listening) return void api.listen(false, false);
+    if (preview) return closePreview();
     if (selected) return closeFile();
   }
 
@@ -793,7 +835,10 @@
         if (reason === "manual") send();
         else startAuto();
       }),
-      on<string[]>("fs-changed", () => scheduleRefresh()),
+      on<string[]>("fs-changed", (paths) => {
+        if (paths.some((p) => !p.startsWith(".git/"))) previewKey++;
+        scheduleRefresh();
+      }),
       on<{ kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
         if (e.kind === "action") {
           agentPending = false;
@@ -1113,8 +1158,13 @@
           isRepo={git.isRepo}
           branch={git.branch}
           {selected}
+          {preview}
+          {previewKey}
+          covered={showSettings || uiRequests.length > 0 || dragOver}
           {refreshKey}
           onSelect={selectFile}
+          onClosePreview={closePreview}
+          onCode={openCode}
           onBack={closeFile}
           onInitGit={async () => {
             await api.gitInit(root);
@@ -1153,7 +1203,8 @@
     <div class="drop-veil"><div class="drop-box">Dépose pour joindre à ta demande</div></div>
   {/if}
 
-  <div class="toasts">
+  <!-- Le navigateur de l'aperçu est natif et passe devant tout : les bulles se décalent à sa gauche. -->
+  <div class="toasts" style:right={preview?.kind === "url" && layout.right && !zenActive ? `${layout.rightW + 18}px` : null}>
     {#each toasts as t (t.id)}
       <div class="toast">{t.text}</div>
     {/each}
@@ -1221,6 +1272,9 @@
   }
   :global(body.resizing) main {
     transition: none;
+  }
+  :global(body.resizing iframe) {
+    pointer-events: none;
   }
   :global(body.resizing) {
     cursor: col-resize;

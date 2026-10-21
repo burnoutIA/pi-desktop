@@ -229,6 +229,31 @@ impl Resampler {
     }
 }
 
+/// Gain d'affichage automatique : ramène le niveau de la voix (micro ou synthèse) à une même
+/// cible, pour que l'égaliseur réagisse autant à l'utilisateur qu'à l'IA.
+pub struct DisplayGain {
+    env: f32,
+}
+
+impl DisplayGain {
+    const TARGET: f32 = 0.1;
+    /// En dessous, c'est du silence ou du bruit de fond : le niveau mesuré ne bouge pas.
+    const VOICE: f32 = 0.002;
+    /// Retombée du niveau mesuré à chaque appel (~22 ms) : demi-vie d'environ 3 s.
+    const DECAY: f32 = 0.995;
+
+    pub fn new() -> Self {
+        Self { env: Self::TARGET }
+    }
+
+    pub fn update(&mut self, rms: f32) -> f32 {
+        if rms > Self::VOICE {
+            self.env = rms.max(self.env * Self::DECAY);
+        }
+        (Self::TARGET / self.env).clamp(0.5, 12.0)
+    }
+}
+
 /// Calcule des niveaux par bande (0..1, échelle log en fréquence).
 pub struct Analyzer {
     fft: Arc<dyn Fft<f32>>,
@@ -246,22 +271,22 @@ impl Analyzer {
     }
 
     /// Forme d'onde récente (style « Onde ») : les 1024 derniers échantillons, un sur deux,
-    /// en millièmes (entiers : message plus léger). Vide dans le silence.
-    pub fn wave(ring: &Ring) -> Vec<i16> {
+    /// en millièmes (entiers : message plus léger), amplifiés de `gain`. Vide dans le silence.
+    pub fn wave(ring: &Ring, gain: f32) -> Vec<i16> {
         let n = ring.data.len();
         let rms = (ring.data.iter().map(|s| s * s).sum::<f32>() / n.max(1) as f32).sqrt();
         if rms < 2e-4 {
             return Vec::new();
         }
-        ring.data.iter().skip(n.saturating_sub(1024)).step_by(2).map(|s| (s.clamp(-1.0, 1.0) * 1000.0) as i16).collect()
+        ring.data.iter().skip(n.saturating_sub(1024)).step_by(2).map(|s| ((s * gain).clamp(-1.0, 1.0) * 1000.0) as i16).collect()
     }
 
-    /// Retourne (bandes, rms).
-    pub fn bands(&mut self, ring: &Ring) -> (Vec<f32>, f32) {
+    /// Retourne (bandes, rms brut). `gain` amplifie le signal avant l'affichage.
+    pub fn bands(&mut self, ring: &Ring, gain: f32) -> (Vec<f32>, f32) {
         let mut sum = 0.0;
         for (i, (&s, w)) in ring.data.iter().zip(&self.window).enumerate() {
             sum += s * s;
-            self.buf[i] = Complex::new(s * w, 0.0);
+            self.buf[i] = Complex::new(s * w * gain, 0.0);
         }
         let rms = (sum / FFT_SIZE as f32).sqrt();
         if rms < 2e-4 {

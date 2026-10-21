@@ -2,7 +2,7 @@
 //! protocole des serveurs Kyutai (WebSocket + MessagePack). Détection de fin de tour, filtre
 //! anti-écho et niveaux pour l'égaliseur. Push-to-talk : le micro n'est transcrit qu'après Espace.
 
-use crate::audio::{self, Analyzer, AudioShared, Resampler};
+use crate::audio::{self, Analyzer, AudioShared, DisplayGain, Resampler};
 use crate::speech::{self, OralExtractor, Speech};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -755,20 +755,25 @@ impl VoiceEngine {
 
     async fn levels_loop(self: Arc<Self>) {
         let mut analyzer = Analyzer::new();
+        let (mut out_gain, mut in_gain) = (DisplayGain::new(), DisplayGain::new());
+        let (mut out_g, mut in_g) = (1.0, 1.0);
         let mut tick = tokio::time::interval(Duration::from_millis(22));
         let mut was_speaking = false;
         loop {
             tick.tick().await;
             let (out, out_rms, out_wave) = {
                 let ring = self.audio.out_ring.lock().unwrap();
-                let (b, r) = analyzer.bands(&ring);
-                (b, r, Analyzer::wave(&ring))
+                let (b, r) = analyzer.bands(&ring, out_g);
+                (b, r, Analyzer::wave(&ring, out_g))
             };
             let (inp, in_rms, in_wave) = {
                 let ring = self.audio.in_ring.lock().unwrap();
-                let (b, r) = analyzer.bands(&ring);
-                (b, r, Analyzer::wave(&ring))
+                let (b, r) = analyzer.bands(&ring, in_g);
+                (b, r, Analyzer::wave(&ring, in_g))
             };
+            // Gain du prochain tour, d'après le niveau brut de celui-ci.
+            out_g = out_gain.update(out_rms);
+            in_g = in_gain.update(in_rms);
             let _ = self.app.emit(
                 "audio-levels",
                 json!({ "out": out, "in": inp, "outRms": out_rms, "inRms": in_rms, "outWave": out_wave, "inWave": in_wave }),
