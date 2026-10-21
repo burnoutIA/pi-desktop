@@ -10,3 +10,6 @@ voice-server/
 # pi propre à l'app (scripts/setup-pi.sh) et sa config (connexion, sessions)
 /runtime/
 /data/
+
+# config pi propre au projet (créée par pi quand on travaille sur ce dépôt)
+/.pi/

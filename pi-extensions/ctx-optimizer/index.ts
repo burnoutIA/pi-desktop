@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { applyOldResults, distillPrompt, oldResults, stripPastThinking, verifyNote } from "./distill.ts";
 import { setupNotes } from "./notes.ts";
 
@@ -22,7 +22,7 @@ const CONFIG = {
   distillModel: env("CTX_OPT_DISTILL_MODEL", ""), // "provider/model" ; vide = modèle de la session
   stripThinking: env("CTX_OPT_STRIP_THINKING", "1") === "1",
   notes: env("CTX_OPT_NOTES", "1") === "1",
-  outDir: env("CTX_OPT_DIR", ".pi/ctx-out"), // relatif au dossier du projet
+  outDir: env("CTX_OPT_DIR", ".pi/ctx-out"), // absolu, ou relatif au dossier du projet
 };
 
 export default function (pi: ExtensionAPI) {
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI) {
     if (CONFIG.distill) {
       const targets = oldResults(messages, CONFIG.window, CONFIG.minChars);
       if (targets.length) {
-        const dir = join(ctx.cwd, CONFIG.outDir);
+        const dir = resolve(ctx.cwd, CONFIG.outDir);
         mkdirSync(dir, { recursive: true });
         for (const r of targets) {
           if (distilled.has(r.key)) continue;

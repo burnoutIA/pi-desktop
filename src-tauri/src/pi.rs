@@ -21,14 +21,26 @@ destiné à être lu à voix haute, entre les balises <oral> et </oral>. Règles
 en français, une à trois phrases naturelles et parlées, sans markdown, sans code, sans liste, \
 sans URL, sans chemin complet (dis juste le nom du fichier). N'utilise ces balises qu'une fois, à la fin.";
 
-/// Consigne vocale, avec le nom de l'agent s'il en a un.
+/// Consigne vocale, avec le nom de l'agent s'il en a un, suivie de la consigne sur les extensions.
 fn voice_prompt(name: Option<&str>) -> String {
-    match name.map(str::trim).filter(|n| !n.is_empty()) {
+    let base = match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => format!(
             "Tu t'appelles {n} ; tu n'as pas besoin de le répéter. {VOICE_PROMPT}"
         ),
         None => VOICE_PROMPT.to_string(),
-    }
+    };
+    format!("{base}\n\n{}", extensions_prompt())
+}
+
+/// Où pi doit ranger les extensions qu'il crée ou installe : dans ses extensions globales (hors git),
+/// jamais dans `.pi/` du projet ouvert, ni dans `pi-extensions/` (réservé à celles livrées avec l'app).
+fn extensions_prompt() -> String {
+    format!(
+        "Quand tu crées ou installes une extension pi, range-la dans tes extensions globales ({}) \
+et installe les paquets sans --local, sauf si l'utilisateur demande explicitement une extension \
+propre au projet (.pi/ du projet).",
+        agent_dir().join("extensions").display()
+    )
 }
 
 /// Fichier de consignes personnelles que pi ajoute à son prompt système.
@@ -297,6 +309,8 @@ impl PiInstance {
             })
             // Profil Chromium propre au run : deux Chromium ne peuvent pas partager un profil.
             .env("PI_DESKTOP_PW_PROFILE", &profile)
+            // Sorties de ctx-optimizer dans les données de l'app, pas dans `.pi/` du projet ouvert.
+            .env("CTX_OPT_DIR", std::env::var("CTX_OPT_DIR").unwrap_or_else(|_| agent_dir().join("ctx-out").to_string_lossy().into_owned()))
             .args(app_extensions())
             .current_dir(&cwd)
             .stdin(Stdio::piped())
