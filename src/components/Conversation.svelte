@@ -18,16 +18,32 @@
   let stick = true;
   let open = $state<Record<string, boolean>>({});
 
+  let lastTop = 0;
+
+  // Remonter (molette, barre, clavier) coupe le suivi ; il ne reprend
+  // qu'une fois revenu tout en bas.
   function onScroll() {
     const el = scroller;
-    stick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    if (atBottom) stick = true;
+    else if (el.scrollTop < lastTop - 1) stick = false;
+    lastTop = el.scrollTop;
+  }
+
+  // La molette part avant l'évènement scroll : on coupe tout de suite pour
+  // qu'un scroll auto déjà programmé ne ramène pas en bas.
+  function onWheel(e: WheelEvent) {
+    if (e.deltaY < 0) stick = false;
   }
 
   // Suit le bas de la conversation tant que l'utilisateur n'est pas remonté.
   $effect(() => {
     session.items.length;
     lastLen();
-    if (stick) tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
+    if (stick)
+      tick().then(() => {
+        if (stick && scroller) scroller.scrollTo({ top: scroller.scrollHeight });
+      });
   });
 
   function lastLen() {
@@ -84,7 +100,7 @@
   }
 </script>
 
-<div class="feed" bind:this={scroller} onscroll={onScroll}>
+<div class="feed" bind:this={scroller} onscroll={onScroll} onwheel={onWheel}>
   {#if session.items.length === 0}
     <div class="empty">
       <div class="empty-title">{root ? `Parle à ${agentName}` : "Ouvre un projet"}</div>
