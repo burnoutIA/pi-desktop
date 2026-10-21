@@ -133,11 +133,22 @@ pub fn init_agent_dir() {
     }
 }
 
-/// Extensions de pi propres à l'app (dossier `pi-extensions/` du projet), passées avec `--extension`.
+/// Extensions de pi propres à l'app (dossier `pi-extensions/` du projet), passées avec `--extension` :
+/// chaque `*.ts` du dossier, et chaque sous-dossier qui contient un `index.ts`.
 fn app_extensions() -> Vec<String> {
     let Some(dir) = crate::servers::project_root().map(|r| r.join("pi-extensions")) else { return vec![] };
     let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
-    let mut files: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "ts")).collect();
+    let mut files: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter_map(|p| {
+            if p.is_dir() {
+                Some(p.join("index.ts")).filter(|i| i.is_file())
+            } else {
+                Some(p).filter(|p| p.extension().is_some_and(|x| x == "ts"))
+            }
+        })
+        .collect();
     files.sort();
     files.into_iter().flat_map(|p| ["--extension".to_string(), p.to_string_lossy().into_owned()]).collect()
 }
