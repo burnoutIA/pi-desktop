@@ -42,6 +42,8 @@ SHORT_SILENCE = 3
 MIN_VOICED = 3
 # Kyutai horodate ses mots ~0,5 s après leur début réel ; Pi Voice en tient compte (filtre de volume).
 KYUTAI_LAG = 0.5
+# Durées de pause des 4 probabilités envoyées à chaque trame (protocole Kyutai).
+PAUSE_HEADS_S = (0.5, 1.0, 2.0, 3.0)
 MODEL_DIR = Path.home() / ".cache" / "pi-voice" / "models" / "parakeet-tdt-0.6b-v3-onnx"
 
 
@@ -116,8 +118,11 @@ class Session:
             return None, start, 0.0
         return audio, start, len(audio) / RATE_ASR
 
-    def pause_probability(self) -> float:
-        return min(1.0, self.silence * STEP / 0.5)
+    def pause_probabilities(self) -> list[float]:
+        """Comme les 4 têtes de Kyutai : pause d'au moins 0,5 s, 1 s, 2 s, 3 s. Pi Voice termine la
+        phrase sur la tête 2 s : une simple respiration au milieu d'une longue phrase ne la coupe pas."""
+        s = self.silence * STEP
+        return [min(1.0, s / h) for h in PAUSE_HEADS_S]
 
 
 async def handle(ws, engine: Engine):
@@ -153,8 +158,7 @@ async def handle(ws, engine: Engine):
             kind = m.get("type")
             if kind == "Audio":
                 s.push(np.asarray(m.get("pcm", []), dtype=np.float32))
-                p = s.pause_probability()
-                await send({"type": "Step", "step_idx": step, "prs": [p, p, p, p]})
+                await send({"type": "Step", "step_idx": step, "prs": s.pause_probabilities()})
                 step += 1
                 if s.segment_ready():
                     pending.append(asyncio.create_task(emit(*s.take())))
