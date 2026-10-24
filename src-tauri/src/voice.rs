@@ -52,7 +52,7 @@ pub struct VoiceConfig {
     /// à pi ce qui est à faire, même pendant que pi travaille.
     #[serde(default)]
     pub voice_agent: bool,
-    /// Serveur compatible OpenAI de l'agent vocal (harn : modèle déjà chargé, deuxième slot).
+    /// Serveur compatible OpenAI de l'agent vocal (harn : modèle déjà chargé, slot libre).
     #[serde(default = "default_agent_url")]
     pub agent_url: String,
 }

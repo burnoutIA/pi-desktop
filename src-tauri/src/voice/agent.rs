@@ -1,5 +1,5 @@
 //! Agent vocal : il répond tout de suite à ce que tu dis, même quand pi travaille. Il tourne sur un
-//! serveur compatible OpenAI (harn par défaut, deuxième slot du moteur), sans réflexion, et commence
+//! serveur compatible OpenAI (harn par défaut, sur le slot libre du moteur), sans réflexion, et commence
 //! chaque réponse par une ligne d'action :
 //!   [REPONDRE]                  : il répond seul (avancement, discussion, question simple)
 //!   [TRANSMETTRE] <consigne>    : la consigne part à pi (nouvelle demande, ou ajout en cours de route)
@@ -13,9 +13,6 @@ use super::*;
 
 /// Échanges gardés en mémoire (une question + une réponse = 2).
 const HISTORY_MAX: usize = 16;
-/// Slot du moteur réservé à l'agent (llama-server derrière harn) : il ne prend jamais celui de
-/// pi, qui garde tout son contexte en mémoire au lieu de le relire (60 à 150 s mesurées).
-const AGENT_SLOT: u32 = 1;
 /// Au-delà, la ligne d'action est jugée absente : tout le texte est lu.
 const HEADER_MAX: usize = 400;
 
@@ -126,6 +123,25 @@ fn parse_header(buf: &str, done: bool) -> Option<(String, String, usize)> {
     }
 }
 
+/// Une ligne de journal par réponse : premier token, et ce que le moteur a fait (llama-server).
+/// `prompt` : tokens relus et leur durée ; `cache` : tokens repris du cache du slot.
+fn latency_line(first_token: Option<u64>, t: Option<&Value>, pi_busy: bool) -> String {
+    let mut s = format!("1er token {} ms", first_token.map_or("?".into(), |v| v.to_string()));
+    if let Some(t) = t {
+        let n = |k: &str| t[k].as_f64();
+        if let (Some(pn), Some(pm)) = (n("prompt_n"), n("prompt_ms")) {
+            s += &format!(", prompt {pn:.0} tok en {pm:.0} ms");
+        }
+        if let Some(c) = n("cache_n") {
+            s += &format!(", cache {c:.0} tok");
+        }
+        if let (Some(gn), Some(gs)) = (n("predicted_n"), n("predicted_per_second")) {
+            s += &format!(", génération {gn:.0} tok à {gs:.1} tok/s");
+        }
+    }
+    s + if pi_busy { ", pi travaille" } else { ", pi inactif" }
+}
+
 impl VoiceEngine {
     /// Réponse de l'agent à ce que tu viens de dire. `pi_state` : l'état de pi vu par l'interface.
     /// `pi_model` : le modèle de pi (« fournisseur/id »). S'il passe par le même serveur que l'agent,
@@ -187,10 +203,10 @@ impl VoiceEngine {
             "temperature": 0.6,
             "chat_template_kwargs": { "enable_thinking": false },
         });
+        // Pas d'`id_slot` : pi n'en impose pas non plus, et llama-server le met sur le slot qui a déjà
+        // son contexte, parfois le 1. Un slot imposé à l'agent le faisait alors attendre la fin du
+        // tour de pi. Sans, il prend le slot libre (celui qui ressemble le plus à sa conversation).
         let client = reqwest::Client::new();
-        if ["//127.0.0.1", "//localhost", "//[::1]"].iter().any(|h| cfg.agent_url.contains(h)) {
-            body["id_slot"] = json!(AGENT_SLOT);
-        }
         // Même modèle que pi s'il passe par ce serveur. Sinon pas de champ `model` : harn répond
         // avec le modèle déjà chargé, sans en changer.
         if let (Some((name, _)), Some((p, id))) = (&provider, pi_model.and_then(|m| m.split_once('/'))) {
@@ -210,6 +226,9 @@ impl VoiceEngine {
         let mut spoken_upto = 0usize; // octets de `out` déjà envoyés à la voix
         let mut done = false;
         let mut first_word: Option<u64> = None;
+        // Mesure du délai avant le premier token, surtout quand pi lit un gros contexte sur le même moteur.
+        let mut first_token: Option<u64> = None;
+        let mut timings: Option<Value> = None; // bloc `timings` de llama-server (dernier morceau du flux)
         while !done {
             let Some(chunk) = resp.chunk().await? else { break };
             if !self.agent_current(generation) {
@@ -228,7 +247,13 @@ impl VoiceEngine {
                 }
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
                     if let Some(d) = v["choices"][0]["delta"]["content"].as_str() {
+                        if !d.is_empty() {
+                            first_token.get_or_insert(t0.elapsed().as_millis() as u64);
+                        }
                         out.push_str(d);
+                    }
+                    if v["timings"].is_object() {
+                        timings = Some(v["timings"].clone());
                     }
                 }
             }
@@ -279,6 +304,9 @@ impl VoiceEngine {
         let skip = parse_header(&out, true).map(|(_, _, s)| s).unwrap_or(0);
         let oral = out[skip..].trim().to_string();
         crate::applog!("agent vocal : premier mot {} ms, fin {} ms : « {oral} »", first_word.unwrap_or(0), t0.elapsed().as_millis());
+        // « pi travaille » : début de l'état écrit par l'interface (session.summary()), pour ce projet seulement.
+        let pi_busy = pi_state.starts_with("pi travaille");
+        crate::applog!("agent vocal : latence {}", latency_line(first_token, timings.as_ref(), pi_busy));
         self.emit_agent(run, AgentEvent::Reply { text: oral });
         let mut st = self.agent.lock().unwrap();
         let h = st.history.entry(run.to_string()).or_default();
