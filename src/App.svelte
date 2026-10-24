@@ -196,6 +196,8 @@
   let zen = $state(localStorage.getItem("zen") === "1");
   $effect(() => localStorage.setItem("zen", zen ? "1" : "0"));
   const zenActive = $derived(zen && !onboarding);
+  // L'aperçu web est une vraie fenêtre native : rien ne peut passer par-dessus, le composer ne déborde pas de ce côté.
+  const overRight = $derived(layout.right && preview?.kind !== "url");
   /** Dernier résumé vocal de l'agent (sous-titre du mode zen). */
   const lastOral = $derived.by(() => {
     for (let i = session.items.length - 1; i >= 0; i--) {
@@ -1300,7 +1302,13 @@
       {/if}
     </aside>
 
-    <section class="center" class:zen={zenActive}>
+    <section
+      class="center"
+      class:zen={zenActive}
+      class:only-left={layout.left && !overRight}
+      class:only-right={overRight && !layout.left}
+      class:no-over={!layout.left && !overRight}
+    >
       {#if zenActive}
         <Ambient energy={zenEnergy} mood={listening ? "user" : speaking ? "agent" : "calm"} />
       {/if}
@@ -1579,6 +1587,27 @@
   }
   .center.zen {
     overflow: hidden;
+  }
+  /* Le composer garde une largeur minimale : si la colonne est trop étroite,
+     il passe par-dessus le(s) panneau(x) ouvert(s) au lieu de rétrécir. */
+  main .center > :global(.composer) {
+    z-index: 10;
+    align-self: center;
+    width: calc(100% - 36px);
+    min-width: min(720px, calc(100vw - 36px));
+    margin-left: 0;
+    margin-right: 0;
+  }
+  main .center.only-left > :global(.composer) {
+    align-self: flex-end;
+    margin-right: 18px;
+  }
+  main .center.no-over > :global(.composer) {
+    min-width: 0;
+  }
+  main .center.only-right > :global(.composer) {
+    align-self: flex-start;
+    margin-left: 18px;
   }
   .right {
     border-left: 1px solid var(--line);

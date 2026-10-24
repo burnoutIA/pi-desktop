@@ -123,13 +123,33 @@
     }
   }
 
-  // Ajuste la hauteur au contenu et garde le curseur à la fin pendant la dictée.
+  // Ajuste la hauteur au contenu (jusqu'à la moitié de la fenêtre, au-delà ça défile).
+  function fit() {
+    if (!ta) return;
+    const max = Math.round(window.innerHeight * 0.5);
+    ta.style.height = "auto";
+    const h = Math.min(ta.scrollHeight, max);
+    ta.style.height = h + "px";
+    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
+  }
+
+  // Garde aussi le curseur à la fin pendant la dictée.
   $effect(() => {
     void value;
     if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 180) + "px";
+    fit();
     if (listening && document.activeElement !== ta) ta.scrollTop = ta.scrollHeight;
+  });
+
+  // La largeur change le retour à la ligne : on réajuste quand la zone est redimensionnée.
+  $effect(() => {
+    if (!ta) return;
+    let w = ta.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (ta.clientWidth !== w) (w = ta.clientWidth), fit();
+    });
+    ro.observe(ta);
+    return () => ro.disconnect();
   });
 
   const placeholder = $derived(
@@ -458,14 +478,15 @@
     color: var(--text-strong);
   }
   textarea {
-    flex: 1;
+    flex: none;
+    width: 100%;
     resize: none;
+    overflow-y: hidden;
     border: 0;
     outline: 0;
     background: transparent;
     padding: 6px 0;
     line-height: 1.5;
-    max-height: 180px;
     font-size: 14.5px;
   }
   textarea::placeholder {
