@@ -16,8 +16,11 @@
     onPromptSaved: () => void;
     onProviders: () => void;
     toast: (msg: string) => void;
+    /** Script `dot` du dépôt dots (null : introuvable). */
+    dotsCli: string | null;
+    onDotsCli: (path: string) => void;
   };
-  let { config, onChange, onClose, models, modelKey, onModel, agent, onAgent, root, onPromptSaved, onProviders, toast }: Props =
+  let { config, onChange, onClose, models, modelKey, onModel, agent, onAgent, root, onPromptSaved, onProviders, toast, dotsCli, onDotsCli }: Props =
     $props();
 
   type Tab = "agent" | "voice" | "look";
@@ -137,6 +140,21 @@
       </div>
       <small>Ouvre la connexion de pi (/login) : abonnement ou clé API.</small>
     </div>
+
+    <label class="field">
+      <span>Dots</span>
+      <input
+        value={dotsCli ?? ""}
+        placeholder="/chemin/vers/dots/dot"
+        spellcheck="false"
+        onchange={(e) => onDotsCli((e.target as HTMLInputElement).value.trim())}
+      />
+      <small>
+        {dotsCli
+          ? "Script dot des agents autonomes. pi reçoit le skill pour en créer et les gérer."
+          : "Script dot introuvable : indique son chemin pour créer des dots et leur parler."}
+      </small>
+    </label>
 
     <div class="field">
       <div class="row">

@@ -43,6 +43,23 @@ propre au projet (.pi/ du projet).",
     )
 }
 
+/// Balise qui entoure la consigne vocale ajoutée aux messages envoyés à un dot (l'interface la
+/// masque : voir APP_NOTE dans session.svelte.ts).
+const DOT_NOTE_TAG: &str = "pi-voice";
+
+/// Consigne vocale pour un dot : ses options de démarrage lui appartiennent, elle part donc avec
+/// chaque message envoyé depuis l'app.
+fn dot_voice_note(name: Option<&str>) -> String {
+    let who = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => format!(" Dans cette application, on t'appelle {n}."),
+        None => String::new(),
+    };
+    format!(
+        "\n\n<{DOT_NOTE_TAG}>Consigne de l'application (ne la commente pas) : ce message vient de \
+l'application vocale de bureau, pas de Telegram.{who} {VOICE_PROMPT}</{DOT_NOTE_TAG}>"
+    )
+}
+
 /// Fichier de consignes personnelles que pi ajoute à son prompt système.
 /// Global : `<agent-dir>/APPEND_SYSTEM.md`. Projet : `.pi/APPEND_SYSTEM.md` (prioritaire, non cumulé).
 pub fn prompt_path(scope: &str, root: Option<&str>) -> Result<std::path::PathBuf> {
@@ -56,6 +73,15 @@ pub fn prompt_path(scope: &str, root: Option<&str>) -> Result<std::path::PathBuf
 }
 
 pub type EventHook = Arc<dyn Fn(&Value) + Send + Sync>;
+
+/// Ce qu'un run fait tourner : le pi de l'app sur un dossier, ou un dot joint par `dot @nom rpc`.
+pub enum Launch {
+    /// `session` : fichier de session à reprendre ; sinon `resume` reprend la dernière (--continue).
+    Local { cwd: String, resume: bool, session: Option<String>, extra_prompt: Option<String> },
+    /// `dot <dossier> rpc` : même protocole, mais la configuration (session, extensions, prompt)
+    /// appartient au dot.
+    Dot { cli: std::path::PathBuf, dir: std::path::PathBuf },
+}
 
 struct PiProcess {
     child: Arc<Mutex<Child>>,
@@ -72,6 +98,8 @@ pub struct PiInstance {
     /// pi travaille (entre agent_start et agent_settled) : fermer l'app demandera confirmation.
     busy: Arc<std::sync::atomic::AtomicBool>,
     proc: Mutex<Option<PiProcess>>,
+    /// Consigne ajoutée aux messages (dot seulement : il ignore les options de démarrage).
+    note: std::sync::Mutex<Option<String>>,
     pending: Pending,
     next_id: AtomicU64,
     generation: Arc<AtomicU64>,
@@ -269,50 +297,39 @@ impl PiInstance {
             slot,
             busy: Arc::default(),
             proc: Mutex::new(None),
+            note: std::sync::Mutex::new(None),
             pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Lance pi dans `cwd` (et arrête l'instance précédente).
-    /// `session` : fichier de session à reprendre ; sinon `resume` reprend la dernière (--continue).
-    pub async fn start(
-        &self,
-        app: AppHandle,
-        cwd: String,
-        agent_name: Option<String>,
-        resume: bool,
-        session: Option<String>,
-        extra_prompt: Option<String>,
-        hook: EventHook,
-    ) -> Result<()> {
+    /// Lance pi (ou rejoint un dot) et arrête l'instance précédente.
+    pub async fn start(&self, app: AppHandle, launch: Launch, agent_name: Option<String>, hook: EventHook) -> Result<()> {
         self.stop().await;
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-        let program = pi_binary();
-        applog!("lancement de pi [{}] : {program} --mode rpc (dossier {cwd})", self.run);
-        let profile = agent_dir().parent().unwrap_or(std::path::Path::new(".")).join(match self.slot {
-            0 => "playwright/profile".to_string(),
-            n => format!("playwright/profile-{}", n + 1),
-        });
-        let mut child = Command::new(&program)
-            .env("PATH", extended_path())
-            .args(["--mode", "rpc", "--append-system-prompt", &match &extra_prompt {
-                Some(x) => format!("{}\n\n{x}", voice_prompt(agent_name.as_deref())),
-                None => voice_prompt(agent_name.as_deref()),
-            }])
-            .args(match &session {
-                Some(f) => vec!["--session".to_string(), f.clone()],
-                None if resume => vec!["--continue".to_string()],
-                None => vec![],
-            })
-            // Profil Chromium propre au run : deux Chromium ne peuvent pas partager un profil.
-            .env("PI_DESKTOP_PW_PROFILE", &profile)
-            // Sorties de ctx-optimizer dans les données de l'app, pas dans `.pi/` du projet ouvert.
-            .env("CTX_OPT_DIR", std::env::var("CTX_OPT_DIR").unwrap_or_else(|_| agent_dir().join("ctx-out").to_string_lossy().into_owned()))
-            .args(app_extensions())
-            .current_dir(&cwd)
+        let mut command = match &launch {
+            Launch::Local { cwd, resume, session, extra_prompt } => {
+                *self.note.lock().unwrap() = None;
+                self.local_command(cwd, *resume, session.as_deref(), extra_prompt.as_deref(), agent_name.as_deref())
+            }
+            Launch::Dot { cli, dir } => {
+                *self.note.lock().unwrap() = Some(dot_voice_note(agent_name.as_deref()));
+                applog!("connexion au dot [{}] : {} {} rpc", self.run, cli.display(), dir.display());
+                let mut c = Command::new(cli);
+                c.env("PATH", extended_path())
+                    .arg(dir)
+                    .arg("rpc")
+                    .current_dir(cli.parent().unwrap_or(std::path::Path::new("/")));
+                c
+            }
+        };
+        let program = match &launch {
+            Launch::Local { .. } => pi_binary(),
+            Launch::Dot { cli, .. } => cli.to_string_lossy().into_owned(),
+        };
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -416,6 +433,41 @@ impl PiInstance {
         Ok(())
     }
 
+    /// `pi --mode rpc` de l'app dans `cwd`, avec sa consigne vocale, ses extensions et ses outils.
+    fn local_command(&self, cwd: &str, resume: bool, session: Option<&str>, extra_prompt: Option<&str>, agent_name: Option<&str>) -> Command {
+        let program = pi_binary();
+        applog!("lancement de pi [{}] : {program} --mode rpc (dossier {cwd})", self.run);
+        let profile = agent_dir().parent().unwrap_or(std::path::Path::new(".")).join(match self.slot {
+            0 => "playwright/profile".to_string(),
+            n => format!("playwright/profile-{}", n + 1),
+        });
+        let mut c = Command::new(&program);
+        c.env("PATH", extended_path())
+            .args(["--mode", "rpc", "--append-system-prompt", &match extra_prompt {
+                Some(x) => format!("{}\n\n{x}", voice_prompt(agent_name)),
+                None => voice_prompt(agent_name),
+            }])
+            .args(match session {
+                Some(f) => vec!["--session".to_string(), f.to_string()],
+                None if resume => vec!["--continue".to_string()],
+                None => vec![],
+            })
+            // Profil Chromium propre au run : deux Chromium ne peuvent pas partager un profil.
+            .env("PI_DESKTOP_PW_PROFILE", &profile)
+            // Sorties de ctx-optimizer dans les données de l'app, pas dans `.pi/` du projet ouvert.
+            .env("CTX_OPT_DIR", std::env::var("CTX_OPT_DIR").unwrap_or_else(|_| agent_dir().join("ctx-out").to_string_lossy().into_owned()))
+            .args(app_extensions())
+            .current_dir(cwd);
+        // Gérer des dots : le skill du dépôt dots, et le chemin de son script.
+        if let Some(cli) = crate::dots::cli() {
+            c.env("DOTS_CLI", &cli).env("DOTS_HOME", crate::dots::home());
+            if let Some(skill) = crate::dots::skill_dir() {
+                c.arg("--skill").arg(skill);
+            }
+        }
+        c
+    }
+
     pub async fn stop(&self) {
         if let Some(p) = self.proc.lock().await.take() {
             self.generation.fetch_add(1, Ordering::SeqCst);
@@ -438,8 +490,20 @@ impl PiInstance {
         Ok(())
     }
 
+    /// Dot : la consigne vocale part avec chaque message (pas avec les commandes « / »).
+    fn add_note(&self, cmd: &mut Value) {
+        let Some(note) = self.note.lock().unwrap().clone() else { return };
+        if !matches!(cmd["type"].as_str(), Some("prompt" | "steer" | "follow_up")) {
+            return;
+        }
+        if let Some(m) = cmd["message"].as_str().filter(|m| !m.trim_start().starts_with('/')) {
+            cmd["message"] = Value::String(format!("{m}{note}"));
+        }
+    }
+
     /// Envoie une commande RPC et attend sa réponse (corrélée par `id`).
     pub async fn send(&self, mut cmd: Value) -> Result<Value> {
+        self.add_note(&mut cmd);
         let id = format!("ui-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         cmd["id"] = Value::String(id.clone());
         let (tx, rx) = oneshot::channel();
@@ -480,17 +544,7 @@ impl PiManager {
     }
 
     /// Lance (ou relance) le pi d'un run.
-    pub async fn start(
-        &self,
-        app: AppHandle,
-        run: String,
-        cwd: String,
-        agent_name: Option<String>,
-        resume: bool,
-        session: Option<String>,
-        extra_prompt: Option<String>,
-        hook: EventHook,
-    ) -> Result<()> {
+    pub async fn start(&self, app: AppHandle, run: String, launch: Launch, agent_name: Option<String>, hook: EventHook) -> Result<()> {
         let inst = {
             let mut runs = self.runs.lock().await;
             match runs.get(&run) {
@@ -505,7 +559,7 @@ impl PiManager {
                 }
             }
         };
-        inst.start(app, cwd, agent_name, resume, session, extra_prompt, hook).await
+        inst.start(app, launch, agent_name, hook).await
     }
 
     /// Arrête le pi d'un run et l'oublie.
@@ -534,5 +588,36 @@ impl PiManager {
 
     pub async fn write(&self, run: &str, record: Value) -> Result<()> {
         self.get(run).await?.write(record).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_note_goes_with_messages_only() {
+        let inst = PiInstance::new("d:test".into(), 0);
+        *inst.note.lock().unwrap() = Some(dot_voice_note(Some("Jarvis")));
+
+        let mut prompt = json!({ "type": "prompt", "message": "bonjour" });
+        inst.add_note(&mut prompt);
+        let m = prompt["message"].as_str().unwrap();
+        assert!(m.starts_with("bonjour\n\n<pi-voice>") && m.ends_with("</pi-voice>"));
+        assert!(m.contains("Jarvis") && m.contains("<oral>"));
+
+        let mut cmd = json!({ "type": "prompt", "message": "/status" });
+        inst.add_note(&mut cmd);
+        assert_eq!(cmd["message"], "/status");
+
+        let mut other = json!({ "type": "get_messages" });
+        inst.add_note(&mut other);
+        assert!(other.get("message").is_none());
+
+        // Pi local : aucune consigne ajoutée (elle passe par --append-system-prompt).
+        *inst.note.lock().unwrap() = None;
+        let mut local = json!({ "type": "prompt", "message": "bonjour" });
+        inst.add_note(&mut local);
+        assert_eq!(local["message"], "bonjour");
     }
 }

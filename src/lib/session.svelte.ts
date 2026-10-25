@@ -34,6 +34,10 @@ function textOf(content: unknown): string {
   return "";
 }
 
+/** Consigne vocale ajoutée par l'app aux messages envoyés à un dot : jamais affichée. */
+const APP_NOTE = /\s*<pi-voice>[\s\S]*?<\/pi-voice>\s*$/;
+const userText = (content: unknown) => textOf(content).replace(APP_NOTE, "");
+
 /** Chemin de fichier visé par un appel d'outil, s'il y en a un. */
 export function toolPath(args: Record<string, any> | undefined): string | undefined {
   if (!args) return undefined;
@@ -70,7 +74,7 @@ export class Session {
     const tools = new Map<string, Extract<Item, { kind: "tool" }>>();
     for (const m of messages ?? []) {
       if (m?.role === "user") {
-        const text = textOf(m.content);
+        const text = userText(m.content);
         if (text.trim()) items.push({ kind: "user", id: uid("u"), text });
       } else if (m?.role === "assistant" && Array.isArray(m.content)) {
         const blocks: Block[] = m.content
@@ -150,7 +154,7 @@ export class Session {
       case "message_start": {
         const m = ev.message;
         if (m?.role === "user") {
-          this.items.push({ kind: "user", id: uid("u"), text: textOf(m.content) });
+          this.items.push({ kind: "user", id: uid("u"), text: userText(m.content) });
         } else if (m?.role === "assistant") {
           const item: Item = { kind: "assistant", id: uid("a"), blocks: [], streaming: true };
           this.items.push(item);

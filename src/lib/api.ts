@@ -33,6 +33,24 @@ export type Attachment = { name: string; path: string; size: number; mime: strin
 
 export type SessionInfo = { path: string; id: string; title: string; updated: number; messages: number; named: boolean };
 
+/** Un dot (un dossier : `<nom>.dot`, skills/, extensions/, state/), tel que le décrit `dot list --json`. */
+export type DotInfo = {
+  name: string;
+  running: boolean;
+  vault: boolean;
+  interface: string;
+  dir: string;
+  /** Son fichier `.dot` (réglages, providers, secrets). */
+  file: string;
+  socket: string;
+  description: string;
+  /** Il vit dans l'app (data/dots/), et non ailleurs sur le disque. */
+  inApp: boolean;
+};
+export type DotsInfo = { cli: string | null; skill: boolean; home: string };
+
+export type DotAction = "start" | "stop" | "remove" | "use-rpc" | "import";
+
 export type PromptFile = { path: string; content: string; exists: boolean };
 
 export type AudioLevels = {
@@ -49,6 +67,14 @@ export const api = {
   /** Lance (ou relance) le pi d'un run. `session` : fichier de session à reprendre. */
   piStart: (run: string, cwd: string, agentName: string | null, opts: { resume?: boolean; session?: string | null; extraPrompt?: string | null } = {}) =>
     invoke<void>("pi_start", { run, cwd, agentName, resume: opts.resume ?? false, session: opts.session ?? null, extraPrompt: opts.extraPrompt ?? null }),
+  /** Rejoint un dot (`dot @nom rpc`) à la place d'un pi local. */
+  piStartDot: (run: string, dir: string, agentName: string | null) => invoke<void>("pi_start_dot", { run, dir, agentName }),
+  dotsInfo: () => invoke<DotsInfo>("dots_info"),
+  dotsSetCli: (path: string) => invoke<void>("dots_set_cli", { path }),
+  dotsList: () => invoke<DotInfo[]>("dots_list"),
+  /** Nouveau dot dans l'app : copie vierge du dot du dossier `from`, ou `.dot` à remplir. */
+  dotsCreate: (name: string, from: string | null) => invoke<string>("dots_create", { name, from }),
+  dotsAction: (action: DotAction, dir: string) => invoke<string>("dots_action", { action, dir }),
   piStop: (run: string) => invoke<void>("pi_stop", { run }),
   watchDir: (cwd: string) => invoke<void>("watch_dir", { cwd }),
   voiceSetActiveRun: (run: string) => invoke<void>("voice_set_active_run", { run }),

@@ -14,6 +14,9 @@ export type Branch = {
 };
 
 /** Pourquoi un run en arrière-plan demande ton attention. */
+/** Run d'un dot : sa conversation vit dans son conteneur, l'app s'y branche. */
+export type DotRef = { name: string; dir: string };
+
 export type Attention = "done" | "error" | "waiting" | null;
 
 export class Run {
@@ -21,6 +24,7 @@ export class Run {
   /** Dossier du projet. */
   readonly root: string;
   readonly branch: Branch | null;
+  readonly dot: DotRef | null;
   /** Nom affiché (titre de la session pour une branche). */
   label = $state("");
   session = new Session();
@@ -37,11 +41,17 @@ export class Run {
   /** Sessions déjà titrées (titre généré une fois). */
   titled = new Set<string>();
 
-  constructor(root: string, branch: Branch | null = null, label = "") {
+  constructor(root: string, branch: Branch | null = null, label = "", dot: DotRef | null = null) {
     this.root = root;
     this.branch = branch;
-    this.id = branch ? `b:${branch.path}` : `p:${root}`;
+    this.dot = dot;
+    this.id = dot ? `d:${dot.dir}` : branch ? `b:${branch.path}` : `p:${root}`;
     this.label = label;
+  }
+
+  /** Un dot : son espace de travail (`state/workspace`, `/dot/workspace` dans le conteneur). */
+  static forDot(dot: DotRef) {
+    return new Run(`${dot.dir}/state/workspace`, null, "", dot);
   }
 
   /** Dossier où travaille pi. */
@@ -50,6 +60,7 @@ export class Run {
   }
 
   get projectName() {
+    if (this.dot) return this.dot.name;
     return this.root.split("/").filter(Boolean).pop() ?? this.root;
   }
 

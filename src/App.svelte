@@ -10,6 +10,8 @@
     type AgentConfig,
     type Attachment,
     type AudioLevels,
+    type DotAction,
+    type DotInfo,
     type GitStatus,
     type GitStatusKind,
     type ServersState,
@@ -30,6 +32,7 @@
   import { isPreviewable, type Preview } from "./lib/preview";
   import SessionsPanel from "./components/SessionsPanel.svelte";
   import RunsPanel from "./components/RunsPanel.svelte";
+  import DotsPanel from "./components/DotsPanel.svelte";
   import BranchBar from "./components/BranchBar.svelte";
   import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import Settings from "./components/Settings.svelte";
@@ -123,7 +126,8 @@
     try {
       const st = await r.send({ type: "get_state" });
       r.sessionPath = st?.data?.sessionFile ?? null;
-      r.sessions = r.sessionPath ? await api.listSessions(r.sessionPath) : [];
+      // Un dot garde sa conversation dans son conteneur : pas de sessions locales à lister.
+      r.sessions = r.sessionPath && !r.dot ? await api.listSessions(r.sessionPath) : [];
     } catch {
       /* pi pas encore prêt */
     }
@@ -420,7 +424,7 @@
   // Titre court généré par le modèle après le premier échange, enregistré dans la session pi.
   async function maybeTitle(r: Run) {
     const path = r.sessionPath;
-    if (!path || r.titled.has(path)) return;
+    if (!path || r.titled.has(path) || r.dot) return;
     if (r.sessions.find((x) => x.path === path)?.named) {
       r.titled.add(path);
       if (r.branch && !r.label) r.label = r.sessions.find((x) => x.path === path)?.title ?? "";
@@ -448,7 +452,7 @@
   async function newSession() {
     if (!run) return;
     // pi travaille : la nouvelle session part en parallèle, sur une branche.
-    if (session.busy) return startParallel();
+    if (session.busy) return run.dot ? toast("Le dot travaille : attends qu'il ait fini, ou arrête-le.") : startParallel();
     await api.stopSpeaking();
     const r = await run.send({ type: "new_session" });
     if (r?.data?.cancelled) return toast("Nouvelle session annulée par une extension.");
@@ -548,7 +552,7 @@
       r.session.model = cur?.name ?? cur?.id ?? null;
     }
     // Aucun modèle utilisable : pi n'a pas encore de fournisseur connecté.
-    if (models.length === 0 && onboarding === null) onboarding = "login";
+    if (models.length === 0 && onboarding === null && !r.dot) onboarding = "login";
   }
 
   /** Modèle d'un run : s'applique à son prochain tour, sans toucher aux autres runs. */
@@ -587,6 +591,8 @@
 
   function relPath(p: string) {
     let r = p;
+    // Chemins vus depuis le conteneur d'un dot : /dot/workspace/… est son state/workspace/.
+    if (run?.dot && r.startsWith("/dot/workspace/")) r = r.slice("/dot/workspace/".length);
     if (root && r.startsWith(root + "/")) r = r.slice(root.length + 1);
     return r.replace(/^\.\//, "");
   }
@@ -607,13 +613,15 @@
   /** Lance (ou relance) le pi d'un run. Sans `resume` ni `session`, c'est une nouvelle session. */
   async function startRun(r: Run, opts: { resume?: boolean; session?: string | null } = {}) {
     try {
-      await api.piStart(r.id, r.cwd, agent.name.trim() || null, { ...opts, extraPrompt: branchPrompt(r) });
+      if (r.dot) await api.piStartDot(r.id, r.dot.dir, agent.name.trim() || null);
+      else await api.piStart(r.id, r.cwd, agent.name.trim() || null, { ...opts, extraPrompt: branchPrompt(r) });
       r.piUp = true;
-      const fresh = !opts.resume && !opts.session;
+      const fresh = !r.dot && !opts.resume && !opts.session;
       if (fresh) r.session.reset();
-      else if (opts.session || opts.resume) {
+      else {
+        // Un dot vit sans nous (Telegram, autonomie) : on reprend toujours sa conversation à jour.
         const m = await r.send({ type: "get_messages" });
-        if (!r.session.items.length) r.session.loadHistory(m?.data?.messages ?? []);
+        if (r.dot || !r.session.items.length) r.session.loadHistory(m?.data?.messages ?? []);
       }
       await loadModels(r, fresh);
       await refreshSessions(r);
@@ -636,7 +644,7 @@
     files = [];
     git = { isRepo: false, branch: null, files: [] };
     await api.voiceSetActiveRun(r.id);
-    if (!r.branch && !r.root.startsWith("/tmp/")) localStorage.setItem("lastProject", r.root);
+    if (!r.branch && !r.dot && !r.root.startsWith("/tmp/")) localStorage.setItem("lastProject", r.root);
     try {
       await api.watchDir(r.cwd);
       await refreshFiles();
@@ -652,7 +660,7 @@
 
   /** Ouvre un projet : son run s'il tourne déjà, sinon un nouveau. Le run affiché continue. */
   async function openProject(dir: string) {
-    let r = runs.find((x) => x.root === dir && !x.branch);
+    let r = runs.find((x) => x.root === dir && !x.branch && !x.dot);
     if (!r) {
       r = new Run(dir);
       runs = [...runs, r];
@@ -730,6 +738,143 @@
     chime(kind);
     const what = { done: "a terminé", error: "s'est arrêté sur une erreur", waiting: "attend ta réponse" }[kind];
     toast(`${runName(r)} ${what}.`);
+  }
+
+  // ---------- Dots : agents autonomes dans leur conteneur (script `dot` du dépôt dots) ----------
+  let dots = $state<DotInfo[]>([]);
+  let dotsCli = $state<string | null>(null);
+  /** Action en cours et dernière erreur, par dossier de dot. */
+  let dotPending = $state<Record<string, string>>({});
+  let dotErrors = $state<Record<string, string>>({});
+
+  /** Erreur d'un dot : gardée sous son nom (une bulle passe trop vite), et journalisée. */
+  function dotError(dir: string, e: unknown | null) {
+    const next = { ...dotErrors };
+    if (e === null) delete next[dir];
+    else {
+      const msg = String(e).replace(/^Error:\s*/, "");
+      next[dir] = msg;
+      api.log(`dot ${dir} : ${msg}`);
+    }
+    dotErrors = next;
+  }
+  const connectedDots = $derived(runs.filter((r) => r.dot && r.piUp).map((r) => r.dot!.dir));
+
+  async function refreshDots() {
+    try {
+      dotsCli = (await api.dotsInfo()).cli;
+      dots = dotsCli ? await api.dotsList() : [];
+    } catch (e) {
+      api.log(`liste des dots : ${e}`);
+    }
+  }
+
+  async function setDotsCli(path: string) {
+    try {
+      await api.dotsSetCli(path);
+      await refreshDots();
+      // Le pi local reçoit le skill des dots et DOTS_CLI à son prochain démarrage.
+      if (dotsCli) restartPi("Dots configurés : pi a redémarré pour pouvoir les gérer.");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  function setDotPending(dir: string, what: string | null) {
+    const next = { ...dotPending };
+    if (what) next[dir] = what;
+    else delete next[dir];
+    dotPending = next;
+  }
+
+  const DOT_DOING: Record<DotAction, string> = {
+    start: "allumage…",
+    stop: "extinction…",
+    remove: "suppression…",
+    "use-rpc": "passage en RPC…",
+    import: "rangement…",
+  };
+
+  /** Allumer, éteindre, supprimer, passer en RPC, ranger dans l'app. Renvoie false en cas d'échec. */
+  async function dotAction(action: DotAction, d: DotInfo): Promise<boolean> {
+    setDotPending(d.dir, DOT_DOING[action]);
+    dotError(d.dir, null);
+    try {
+      // On se débranche d'abord (sinon la coupure s'afficherait comme un plantage).
+      const r = runs.find((x) => x.dot?.dir === d.dir);
+      if (r && action !== "start" && action !== "use-rpc") await closeRun(r);
+      if (action === "use-rpc") {
+        await api.dotsAction("use-rpc", d.dir);
+        // Le mode d'interface est lu au démarrage du dot : on le rallume s'il tournait.
+        if (d.running) {
+          if (r) await closeRun(r);
+          await api.dotsAction("stop", d.dir);
+          await api.dotsAction("start", d.dir);
+        }
+        toast(`« ${d.name} » est en mode RPC${d.running ? " (rallumé)" : ""}.`);
+      } else if (action === "import") {
+        // Ses conteneurs portent l'empreinte de son dossier : on l'éteint, on le range, on le rallume.
+        if (d.running) await api.dotsAction("stop", d.dir);
+        const dest = await api.dotsAction("import", d.dir);
+        if (d.running) await api.dotsAction("start", dest);
+        toast(`« ${d.name} » est rangé dans l'app${d.running ? " (rallumé)" : ""}.`);
+      } else {
+        await api.dotsAction(action, d.dir);
+        if (action === "remove") toast(`Dot « ${d.name} » supprimé.`);
+      }
+      return true;
+    } catch (e) {
+      dotError(d.dir, e);
+      return false;
+    } finally {
+      setDotPending(d.dir, null);
+      await refreshDots();
+    }
+  }
+
+  async function createDot(name: string, from: string | null): Promise<boolean> {
+    const key = `new:${name}`;
+    setDotPending(key, "création…");
+    try {
+      await api.dotsCreate(name, from);
+      toast(
+        from
+          ? `Dot « ${name} » créé (mêmes accès et savoir-faire, sans son passé). Clique dessus pour l'allumer.`
+          : `Dot « ${name} » créé : remplis son fichier ${name}.dot (menu ⋯ → Modifier sa configuration).`,
+      );
+      return true;
+    } catch (e) {
+      toast(`Création impossible : ${e}`);
+      return false;
+    } finally {
+      setDotPending(key, null);
+      await refreshDots();
+    }
+  }
+
+  /** Se branche sur un dot (en l'allumant s'il le faut) et affiche sa conversation. */
+  async function openDot(d: DotInfo) {
+    const existing = runs.find((x) => x.dot?.dir === d.dir);
+    if (existing?.piUp) return showRun(existing);
+    if (dotPending[d.dir]) return;
+    dotError(d.dir, null);
+    if (d.interface !== "rpc") {
+      return dotError(d.dir, "Mode terminal : choisis « Passer en mode RPC » dans son menu (⋯) pour lui parler d'ici.");
+    }
+    if (!d.running && !(await dotAction("start", d))) return;
+    const r = existing ?? Run.forDot({ name: d.name, dir: d.dir });
+    if (!existing) runs = [...runs, r];
+    setDotPending(d.dir, "connexion…");
+    try {
+      await startRun(r, { resume: true });
+      await showRun(r);
+    } catch (e) {
+      if (!existing) runs = runs.filter((x) => x !== r);
+      dotError(d.dir, e);
+    } finally {
+      setDotPending(d.dir, null);
+      await refreshDots();
+    }
   }
 
   async function pickProject() {
@@ -974,9 +1119,31 @@
         const r = runs.find((x) => x.id === id);
         if (!r) return;
         if (ev.type === "extension_ui_request") return onExtensionUi(r, ev);
+        // Relais d'un dot : une autre interface (Telegram, ./dot chat) a déjà répondu à la question.
+        if (ev.type === "hub_ui_answered") {
+          r.uiRequests = r.uiRequests.filter((x) => x.id !== ev.id);
+          if (r.attention === "waiting" && !r.uiRequests.length) r.attention = null;
+          return;
+        }
+        // Le pi du dot redémarre (skill ou extension modifiés) : ce qui était en cours est perdu.
+        if (ev.type === "hub_pi_restarting") {
+          r.session.busy = false;
+          r.uiRequests = [];
+          r.session.notice("Le dot redémarre son pi (il recharge ses skills et extensions)…");
+          // Le relais relance pi au bout de 3 s ; d'ici là il ne transmet rien. Ensuite on recharge
+          // ses commandes (skills) et sa conversation.
+          setTimeout(async () => {
+            if (!r.piUp || r.session.busy) return;
+            await loadCommands(r);
+            const m = await r.send({ type: "get_messages" }).catch(() => null);
+            if (m?.data?.messages && !r.session.busy) r.session.loadHistory(m.data.messages);
+          }, 8000);
+          return;
+        }
         r.session.handle(ev);
         if (ev.type === "agent_settled") {
           refreshSessions(r).then(() => maybeTitle(r));
+          if (!r.dot && dotsCli) refreshDots();
           if (r.id !== visibleId) {
             // Fini en arrière-plan : son résumé oral attend qu'on revienne sur lui.
             const last = [...r.session.items].reverse().find((i) => i.kind === "assistant");
@@ -995,7 +1162,10 @@
         r.piUp = false;
         r.session.busy = false;
         const why = stderr?.trim().split("\n").pop();
-        r.session.notice(`pi s'est arrêté (${code})${why ? ` : ${why}` : ""}. Clique sur la pastille du modèle pour le relancer.`, "warn");
+        if (r.dot) {
+          r.session.notice(`Connexion au dot perdue${why ? ` : ${why}` : ""}. Clique sur lui dans la liste des dots pour te rebrancher.`, "warn");
+          refreshDots();
+        } else r.session.notice(`pi s'est arrêté (${code})${why ? ` : ${why}` : ""}. Clique sur la pastille du modèle pour le relancer.`, "warn");
         if (r.id !== visibleId) notifyBackground(r, "error");
       }),
       on<string[]>("close-requested", (ids) => (closeAsk = ids)),
@@ -1073,6 +1243,19 @@
       br.attention = "done";
       runs = [demo, other, br];
       visibleId = demo.id;
+      dotsCli = "/home/demo/dots/dot";
+      const D = "/home/demo/pi-desktop/data/dots";
+      const demoDot = (name: string, description: string, running: boolean, iface: string, inApp = true) => {
+        const dir = inApp ? `${D}/${name}` : `/home/demo/ailleurs/${name}`;
+        return { name, description, running, vault: running, interface: iface, dir, file: `${dir}/${name}.dot`, socket: "", inApp };
+      };
+      dots = [
+        demoDot("perso", "Mon assistant personnel. Brief du matin (agenda et mails), et ce que je lui demande.", true, "rpc"),
+        demoDot("veille", "Veille techno : nouveautés pi, Tauri et modèles locaux, résumé chaque lundi.", false, "rpc"),
+        demoDot("compta", "Factures et relevés : classe, rapproche, prépare la déclaration.", true, "tui"),
+        demoDot("ancien", "Un dot créé hors de l'app.", false, "rpc", false),
+      ];
+      dotErrors = new URLSearchParams(location.search).has("doterr") ? { [`${D}/veille`]: "le dot « veille » ne répond pas (pas de socket)" } : {};
       sttUp = true;
       files = DEMO_FILES;
       git = DEMO_GIT;
@@ -1125,7 +1308,10 @@
       const cfg = await api.getVoiceConfig();
       await updateVoice(saved ? { ...cfg, ...JSON.parse(saved) } : cfg);
       if (await checkPi()) startProject();
+      await refreshDots();
     })();
+    // Les dots s'allument et s'éteignent aussi ailleurs (Telegram, terminal, l'agent) : on suit.
+    const dotsTimer = setInterval(() => dotsCli && refreshDots(), 20_000);
 
     // Glisser-déposer des fichiers sur la fenêtre : ils deviennent des pièces jointes.
     const unDrop = getCurrentWebview().onDragDropEvent((e) => {
@@ -1166,6 +1352,7 @@
     window.addEventListener("vizchange", onViz);
 
     return () => {
+      clearInterval(dotsTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("vizchange", onViz);
       unlisten.forEach((p) => p.then((u) => u()));
@@ -1264,6 +1451,8 @@
         onPromptSaved={() => restartPi("Prompt système enregistré : pi a redémarré.")}
         onProviders={() => ((showSettings = false), (onboarding = "login"))}
         {toast}
+        {dotsCli}
+        onDotsCli={setDotsCli}
       />
     {/if}
   </header>
@@ -1281,11 +1470,25 @@
             {runs}
             {visibleId}
             name={runName}
-            canParallel={!!run && (git.isRepo || !!run.branch)}
+            canParallel={!!run && !run.dot && (git.isRepo || !!run.branch)}
             onSelect={selectRun}
             onClose={closeRun}
             onParallel={startParallel}
           />
+          <DotsPanel
+            {dots}
+            cli={dotsCli}
+            connected={connectedDots}
+            pending={dotPending}
+            errors={dotErrors}
+            onConnect={openDot}
+            onAction={dotAction}
+            onCreate={createDot}
+            onOpen={(p) => api.openExternal(p).catch((e) => toast(String(e)))}
+            onSetCli={setDotsCli}
+            onRefresh={refreshDots}
+          />
+          {#if !run?.dot}
           <SessionsPanel
             {sessions}
             currentPath={sessionPath}
@@ -1296,6 +1499,7 @@
             onNew={newSession}
             onTrash={trashSession}
           />
+          {/if}
         </div>
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="resizer right-edge" onpointerdown={(e) => startResize("left", e)}></div>

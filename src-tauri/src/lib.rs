@@ -2,6 +2,7 @@
 mod applog;
 mod audio;
 mod browser;
+mod dots;
 mod files;
 mod pi;
 mod preview;
@@ -49,7 +50,77 @@ async fn pi_start(
     let voice = state.voice.clone();
     let id = run.clone();
     let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(&id, ev));
-    state.pi.start(app, run, cwd, agent_name, resume.unwrap_or(false), session, extra_prompt, hook).await.map_err(err)
+    let launch = pi::Launch::Local { cwd, resume: resume.unwrap_or(false), session, extra_prompt };
+    state.pi.start(app, run, launch, agent_name, hook).await.map_err(err)
+}
+
+/// Rejoint un dot (`dot <dossier> rpc`) : même protocole que pi, sa configuration lui appartient.
+#[tauri::command]
+async fn pi_start_dot(app: AppHandle, state: State<'_, AppState>, run: String, dir: String, agent_name: Option<String>) -> Res<()> {
+    let cli = dots::cli().ok_or("script dot introuvable : indique son chemin dans les réglages (onglet Agent)")?;
+    let dir = dots::ready(&dir).await.inspect_err(|e| applog!("dots : {dir} pas prêt : {e:#}")).map_err(err)?;
+    let voice = state.voice.clone();
+    let id = run.clone();
+    let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(&id, ev));
+    state.pi.start(app, run.clone(), pi::Launch::Dot { cli, dir: dir.clone() }, agent_name, hook).await.map_err(err)?;
+    // Le connecteur s'arrête aussitôt si le dot refuse : on vérifie que la conversation répond.
+    let probe = tokio::time::timeout(std::time::Duration::from_secs(20), state.pi.send(&run, serde_json::json!({ "type": "get_state" }))).await;
+    if !matches!(probe, Ok(Ok(_))) {
+        state.pi.stop(&run).await;
+        applog!("dots : {} ne répond pas sur son socket RPC", dir.display());
+        return Err("Le dot ne répond pas.".into());
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DotsInfo {
+    /// Script `dot` trouvé (réglages, DOTS_CLI ou dépôt voisin).
+    cli: Option<String>,
+    /// Le pi local a le skill de gestion des dots.
+    skill: bool,
+    /// Où vivent les dots de l'app.
+    home: String,
+}
+
+#[tauri::command]
+fn dots_info() -> DotsInfo {
+    DotsInfo {
+        cli: dots::cli().map(|p| p.to_string_lossy().into_owned()),
+        skill: dots::skill_dir().is_some(),
+        home: dots::home().to_string_lossy().into_owned(),
+    }
+}
+
+#[tauri::command]
+fn dots_set_cli(path: String) -> Res<()> {
+    dots::set_cli(&path).map_err(err)
+}
+
+#[tauri::command]
+async fn dots_list() -> Res<Value> {
+    dots::list().await.map_err(err)
+}
+
+/// Nouveau dot dans l'app, vierge (`.dot` à remplir) ou copie vierge du dot du dossier `from`.
+#[tauri::command]
+async fn dots_create(name: String, from: Option<String>) -> Res<String> {
+    dots::create(&name, from.as_deref()).await.map_err(err)
+}
+
+/// Allumer, éteindre, supprimer, passer en RPC ou ranger dans l'app le dot d'un dossier.
+#[tauri::command]
+async fn dots_action(action: String, dir: String) -> Res<String> {
+    match action.as_str() {
+        "start" => dots::start(&dir).await,
+        "stop" => dots::stop(&dir).await,
+        "remove" => dots::remove(&dir).await,
+        "use-rpc" => dots::use_rpc(&dir).map(|_| String::new()),
+        "import" => dots::import(&dir).await,
+        _ => return Err(format!("action inconnue : {action}")),
+    }
+    .map_err(err)
 }
 
 /// Arrête le pi d'un run.
@@ -402,6 +473,7 @@ pub fn run() {
                 if let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
                     tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
                     SERVERS.shutdown();
+                    dots::stop_all_blocking();
                     std::process::exit(0);
                 }
             });
@@ -424,6 +496,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pi_start,
+            pi_start_dot,
+            dots_info,
+            dots_set_cli,
+            dots_list,
+            dots_create,
+            dots_action,
             pi_stop,
             watch_dir,
             pi_send,
@@ -476,6 +554,8 @@ pub fn run() {
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 SERVERS.shutdown();
+                // Fermer l'app éteint aussi les dots (ils reprendront au prochain allumage).
+                dots::stop_all_blocking();
             }
         });
 }
