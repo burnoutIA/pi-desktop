@@ -96,12 +96,29 @@ impl OralExtractor {
     }
 
     fn flush(&mut self, out: &mut Vec<Speech>) {
-        let w = clean_word(&self.word);
+        // Une balise mal écrite (`</Oral>`, `</oral >`, `<oral>` en double…) ne se lit pas.
+        let w = clean_word(&strip_oral_tags(&self.word));
         self.word.clear();
         if !w.is_empty() {
             out.push(Speech::Word(w));
         }
     }
+}
+
+/// Retire d'un mot les balises `oral` mal écrites (`</Oral>`, `<oral`, `oral>`…), même collées
+/// au texte (`fini.</Oral>`). Le mot « oral » sans chevron (un examen oral) est gardé.
+fn strip_oral_tags(w: &str) -> String {
+    if !w.contains(['<', '>']) {
+        return w.to_string();
+    }
+    let mut out = w.to_string();
+    // Minuscules ASCII seulement : les positions restent valables dans le mot d'origine.
+    for pat in ["</oral>", "<oral>", "</oral", "<oral", "oral>"] {
+        while let Some(p) = out.to_ascii_lowercase().find(pat) {
+            out.replace_range(p..p + pat.len(), "");
+        }
+    }
+    out
 }
 
 /// Retire ce qui ne se prononce pas.
@@ -123,6 +140,7 @@ pub fn fallback_speech(text: &str) -> String {
     let mut out = String::new();
     let mut in_code = false;
     for line in text.lines() {
+        let line: String = line.split_whitespace().map(strip_oral_tags).collect::<Vec<_>>().join(" ");
         let t = line.trim();
         if t.starts_with("```") {
             in_code = !in_code;
@@ -161,6 +179,24 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn malformed_tags_are_not_spoken() {
+        let mut e = OralExtractor::default();
+        let mut all = e.push("Texte.\n<oral>J'ai fini l'examen oral.</Oral>");
+        all.extend(e.finish());
+        assert_eq!(words(&all), ["J'ai", "fini", "l'examen", "oral."]);
+
+        let mut e = OralExtractor::default();
+        let mut all = e.push("<oral>C'est prêt. <oral>");
+        all.extend(e.finish());
+        assert_eq!(words(&all), ["C'est", "prêt."]);
+
+        let mut e = OralExtractor::default();
+        let mut all = e.push("<oral>Voilà. </oral >");
+        all.extend(e.finish());
+        assert_eq!(words(&all), ["Voilà."]);
     }
 
     #[test]
