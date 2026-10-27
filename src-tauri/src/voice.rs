@@ -1,21 +1,17 @@
-//! Moteur vocal : transcription (Parakeet, processeur) et synthèse (Pocket TTS, processeur), au
-//! protocole des serveurs Kyutai (WebSocket + MessagePack). Détection de fin de tour, filtre
-//! anti-écho et niveaux pour l'égaliseur. Push-to-talk : le micro n'est transcrit qu'après Espace.
+//! Moteur vocal : transcription seule (Parakeet, processeur), au protocole des serveurs Kyutai
+//! (WebSocket + MessagePack). Détection de fin de tour et niveaux du micro pour l'égaliseur.
+//! Push-to-talk : le micro n'est transcrit qu'après Espace. pi répond à l'écrit, sans voix.
 
 use crate::audio::{self, Analyzer, AudioShared, DisplayGain, Resampler};
-use crate::speech::{self, OralExtractor, Speech};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio_tungstenite::tungstenite::Message;
-
-mod agent;
 
 /// 80 ms à 24 kHz : la taille de trame attendue par le STT.
 const STT_CHUNK: usize = 1920;
@@ -36,46 +32,16 @@ const PAUSE_THRESHOLD: f32 = 0.6;
 const END_SILENCE_STEPS: u32 = 20;
 /// Délai maximal laissé au STT pour rendre les derniers mots après un arrêt manuel.
 const MANUAL_FLUSH: Duration = Duration::from_millis(3000);
-/// Après la fin de la voix de pi, le STT (0,5 s de retard) peut encore rendre son écho.
-const ECHO_TAIL: Duration = Duration::from_millis(2500);
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceConfig {
     pub stt_url: String,
-    pub tts_url: String,
-    pub voice: String,
-    pub tts_enabled: bool,
-    /// Nom de l'agent : l'agent vocal se présente ainsi.
-    #[serde(default = "default_agent_name")]
-    pub agent_name: String,
-    /// Agent vocal : ce que tu dis passe d'abord par lui ; il répond tout de suite et transmet
-    /// à pi ce qui est à faire, même pendant que pi travaille.
-    #[serde(default)]
-    pub voice_agent: bool,
-    /// Serveur compatible OpenAI de l'agent vocal (harn : modèle déjà chargé, slot libre).
-    #[serde(default = "default_agent_url")]
-    pub agent_url: String,
-}
-
-fn default_agent_url() -> String {
-    "http://127.0.0.1:4747/v1".into()
-}
-
-fn default_agent_name() -> String {
-    "pi".into()
 }
 
 impl Default for VoiceConfig {
     fn default() -> Self {
-        Self {
-            stt_url: "ws://127.0.0.1:8090".into(),
-            tts_url: "ws://127.0.0.1:8089".into(),
-            voice: "estelle".into(),
-            tts_enabled: true,
-            agent_name: default_agent_name(),
-            voice_agent: false,
-            agent_url: default_agent_url(),
-        }
+        Self { stt_url: "ws://127.0.0.1:8090".into() }
     }
 }
 
@@ -96,38 +62,12 @@ enum SttMsg {
     Other,
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum TtsMsg {
-    Audio { pcm: Vec<f32> },
-    Text { text: String },
-    Ready,
-    Error { message: String },
-    #[serde(other)]
-    Other,
-}
-
 #[derive(Serialize)]
 #[serde(tag = "type")]
 enum SttOut<'a> {
     Audio { pcm: &'a [f32] },
     /// Fin de dictée : transcrire tout de suite ce qui reste.
     Flush,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type")]
-enum TtsOut {
-    Text { text: String },
-    Eos,
-}
-
-struct TtsSession {
-    id: u64,
-    tx: UnboundedSender<TtsOut>,
-    words: HashSet<String>,
-    /// Fin de texte envoyée : le prochain mot ouvre une nouvelle session, et celle-ci finit sa lecture.
-    ended: bool,
 }
 
 #[derive(Default)]
@@ -137,9 +77,6 @@ struct TurnState {
     pause_ema: f32,
     /// Pas STT (80 ms) depuis le dernier mot de l'utilisateur.
     steps_since_word: u32,
-    /// Mots prononcés récemment par l'agent (filtre anti-écho).
-    echo_words: HashSet<String>,
-    echo_until: Option<Instant>,
     /// Après un arrêt manuel, on accepte encore les derniers mots pendant un court instant.
     flush_until: Option<Instant>,
     /// Fin de dictée en attente des derniers mots du STT, et pas STT reçus depuis l'arrêt.
@@ -147,78 +84,19 @@ struct TurnState {
     flush_steps: u32,
 }
 
-#[derive(Default)]
-struct RunState {
-    extractor: OralExtractor,
-    spoke: bool,
-    last_text: String,
-}
-
 pub struct VoiceEngine {
     app: AppHandle,
     pub audio: Arc<AudioShared>,
     config: Mutex<VoiceConfig>,
-    tts: Mutex<Option<TtsSession>>,
-    tts_ids: AtomicU64,
     turn: Mutex<TurnState>,
-    run: Mutex<RunState>,
     stt_connected: AtomicBool,
     /// Fin de dictée à signaler au serveur de transcription (`Flush`).
     stt_flush: AtomicBool,
-    /// Les sessions TTS d'identifiant <= à celui-ci sont coupées (voix interrompue).
-    tts_cut: AtomicU64,
-    agent: Mutex<agent::AgentState>,
-    /// Réponse de l'agent vocal en cours ; changé à chaque coupure de la voix.
-    agent_gen: AtomicU64,
-    /// Run affiché : le seul dont pi parle à voix haute.
-    active_run: Mutex<String>,
-}
-
-fn norm(w: &str) -> String {
-    w.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
-}
-
-/// Deux mots « pareils » malgré les petites erreurs de transcription (souci/soucis, vous/vou…).
-fn similar(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let (ca, cb): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let common = ca.iter().zip(&cb).take_while(|(x, y)| x == y).count();
-    if common >= 4 && common + 2 >= ca.len().max(cb.len()) {
-        return true;
-    }
-    ca.len().min(cb.len()) >= 4 && levenshtein(&ca, &cb) <= 1
-}
-
-fn levenshtein(a: &[char], b: &[char]) -> usize {
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.iter().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, cb) in b.iter().enumerate() {
-            cur.push((prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(cur[j] + 1));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
-}
-
-fn is_echo(words: &HashSet<String>, n: &str) -> bool {
-    n.is_empty() || words.iter().any(|w| similar(w, n))
 }
 
 fn with_auth(url: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{url}{sep}auth_id=public_token")
-}
-
-fn url_escape(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 impl VoiceEngine {
@@ -227,16 +105,9 @@ impl VoiceEngine {
             app,
             audio: AudioShared::new(),
             config: Mutex::new(VoiceConfig::default()),
-            tts: Mutex::new(None),
-            tts_ids: AtomicU64::new(0),
             turn: Mutex::new(TurnState::default()),
-            run: Mutex::new(RunState::default()),
             stt_connected: AtomicBool::new(false),
             stt_flush: AtomicBool::new(false),
-            tts_cut: AtomicU64::new(0),
-            agent: Mutex::new(agent::AgentState::default()),
-            agent_gen: AtomicU64::new(0),
-            active_run: Mutex::new(String::new()),
         })
     }
 
@@ -324,26 +195,11 @@ impl VoiceEngine {
         t.listening || t.flush_until.is_some_and(|u| Instant::now() < u)
     }
 
-    fn on_stt_word(self: &Arc<Self>, text: String, start_time: f64) {
+    fn on_stt_word(&self, text: String, start_time: f64) {
         crate::applog!("STT : mot « {text} » ({start_time:.2} s)");
-        let current_words = self.tts.lock().unwrap().as_ref().map(|s| s.words.clone()).unwrap_or_default();
-        let speaking = self.agent_speaking();
         {
             let mut t = self.turn.lock().unwrap();
             if !self.accepting_words(&t) {
-                return;
-            }
-            // Pendant (ou juste après) la voix de l'agent, le micro peut la capter.
-            let mut echo_set = t.echo_words.clone();
-            echo_set.extend(current_words);
-            let echo_active = speaking || t.echo_until.is_some_and(|u| Instant::now() < u);
-            if echo_active && is_echo(&echo_set, &norm(&text)) {
-                crate::applog!("écho ignoré : {text}");
-                return;
-            }
-            if speaking {
-                // L'interface coupe la voix avant d'ouvrir l'écoute : un mot qui arrive ici est un
-                // reste de sa voix.
                 return;
             }
             t.speech_started = true;
@@ -538,278 +394,23 @@ impl VoiceEngine {
         self.stt_connected.load(Ordering::SeqCst)
     }
 
-    // ---------- Synthèse ----------
-
-    /// L'agent parle (synthèse en cours ou audio encore en lecture).
-    fn agent_speaking(&self) -> bool {
-        self.tts.lock().unwrap().is_some() || !self.audio.playback.lock().unwrap().is_empty()
-    }
-
-    /// Coupe immédiatement la voix de l'agent.
-    pub fn stop_speaking(&self) {
-        self.tts_cut.store(self.tts_ids.load(Ordering::SeqCst), Ordering::SeqCst);
-        self.agent_gen.fetch_add(1, Ordering::SeqCst); // l'agent vocal arrête aussi sa réponse
-        let session = self.tts.lock().unwrap().take();
-        self.audio.playback.lock().unwrap().clear();
-        if let Some(s) = session {
-            let mut t = self.turn.lock().unwrap();
-            t.echo_words = s.words;
-            t.echo_until = Some(Instant::now() + ECHO_TAIL);
-        }
-    }
-
-    fn speak_word(self: &Arc<Self>, word: String) {
-        let cfg = self.config();
-        if !cfg.tts_enabled {
-            return;
-        }
-        let mut guard = self.tts.lock().unwrap();
-        if guard.as_ref().is_some_and(|s| s.ended) {
-            // La phrase précédente finit sa lecture dans sa propre session ; ses mots restent
-            // dans le filtre anti-écho.
-            let old = guard.take().unwrap();
-            let mut t = self.turn.lock().unwrap();
-            t.echo_words = old.words;
-            t.echo_until = Some(Instant::now() + ECHO_TAIL);
-        }
-        if guard.is_none() {
-            *guard = Some(self.open_tts(&cfg));
-        }
-        let s = guard.as_mut().unwrap();
-        s.words.insert(norm(&word));
-        let _ = s.tx.send(TtsOut::Text { text: word });
-    }
-
-    fn speak_end(&self) {
-        if let Some(s) = self.tts.lock().unwrap().as_mut() {
-            if !s.ended {
-                let _ = s.tx.send(TtsOut::Eos);
-                s.ended = true;
-            }
-        }
-    }
-
-    /// Lit un texte complet (bouton « réécouter », repli sans `<oral>`).
-    pub fn speak_text(self: &Arc<Self>, text: &str) {
-        self.stop_speaking();
-        for w in text.split_whitespace() {
-            let w = speech::clean_word(w);
-            if !w.is_empty() {
-                self.speak_word(w);
-            }
-        }
-        self.speak_end();
-    }
-
-    fn open_tts(self: &Arc<Self>, cfg: &VoiceConfig) -> TtsSession {
-        let id = self.tts_ids.fetch_add(1, Ordering::SeqCst) + 1;
-        let (tx, mut rx) = mpsc::unbounded_channel::<TtsOut>();
-        let url = with_auth(&format!(
-            "{}/api/tts_streaming?voice={}&format=PcmMessagePack&cfg_alpha=1.5",
-            cfg.tts_url,
-            url_escape(&cfg.voice)
-        ));
-        let me = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
-                Ok((ws, _)) => ws,
-                Err(e) => {
-                    crate::applog!("TTS injoignable : {e}");
-                    let _ = me.app.emit("voice-error", format!("TTS injoignable : {e}"));
-                    me.close_tts(id);
-                    return;
-                }
-            };
-            let (mut sink, mut stream) = ws.split();
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-            let me_r = me.clone();
-            let reader = tauri::async_runtime::spawn(async move {
-                let mut ready_tx = Some(ready_tx);
-                while let Some(Ok(msg)) = stream.next().await {
-                    let Message::Binary(bytes) = msg else { continue };
-                    if me_r.tts_cut.load(Ordering::SeqCst) >= id {
-                        break;
-                    }
-                    match rmp_serde::from_slice::<TtsMsg>(&bytes) {
-                        Ok(TtsMsg::Audio { pcm }) => me_r.audio.playback.lock().unwrap().push(&pcm),
-                        Ok(TtsMsg::Ready) => {
-                            if let Some(t) = ready_tx.take() {
-                                let _ = t.send(());
-                            }
-                        }
-                        Ok(TtsMsg::Text { text }) => {
-                            let _ = me_r.app.emit("tts-word", text);
-                        }
-                        Ok(TtsMsg::Error { message }) => {
-                            let _ = me_r.app.emit("voice-error", format!("TTS : {message}"));
-                        }
-                        Ok(TtsMsg::Other) => {}
-                        Err(e) => crate::applog!("TTS : message illisible : {e}"),
-                    }
-                }
-                me_r.close_tts(id);
-            });
-            // Le serveur doit être prêt avant de recevoir le texte.
-            if tokio::time::timeout(Duration::from_secs(10), ready_rx).await.is_err() {
-                let _ = me.app.emit("voice-error", "TTS : pas de réponse du serveur");
-                reader.abort();
-                me.close_tts(id);
-                return;
-            }
-            while let Some(m) = rx.recv().await {
-                let eos = matches!(m, TtsOut::Eos);
-                let Ok(bytes) = rmp_serde::to_vec_named(&m) else { continue };
-                if sink.send(Message::Binary(bytes.into())).await.is_err() || eos {
-                    break;
-                }
-            }
-            // Sortie de boucle sans Eos = session interrompue : on ferme.
-            if me.tts_cut.load(Ordering::SeqCst) >= id {
-                let _ = sink.close().await;
-                reader.abort();
-            }
-        });
-        TtsSession { id, tx, words: HashSet::new(), ended: false }
-    }
-
-    fn close_tts(&self, id: u64) {
-        let mut guard = self.tts.lock().unwrap();
-        if guard.as_ref().is_some_and(|s| s.id == id) {
-            let s = guard.take().unwrap();
-            let mut t = self.turn.lock().unwrap();
-            t.echo_words = s.words;
-            t.echo_until = None; // l'audio peut encore être en lecture : `is_speaking` le couvre
-        }
-    }
-
-    // ---------- Événements pi -> voix ----------
-
-    /// Le run affiché : seul lui parle (résumé lu à voix haute). Changer de run coupe la voix.
-    pub fn set_active_run(&self, run: &str) {
-        let changed = {
-            let mut a = self.active_run.lock().unwrap();
-            let changed = *a != run;
-            *a = run.to_string();
-            changed
-        };
-        if changed {
-            self.stop_speaking();
-            let mut r = self.run.lock().unwrap();
-            r.extractor.reset();
-            r.spoke = false;
-            r.last_text.clear();
-        }
-    }
-
-    pub fn on_pi_event(self: &Arc<Self>, run: &str, ev: &Value) {
-        if *self.active_run.lock().unwrap() != run {
-            return; // run en arrière-plan : silencieux (l'interface prévient quand il a fini)
-        }
-        match ev["type"].as_str() {
-            Some("agent_start") => {
-                let mut r = self.run.lock().unwrap();
-                r.spoke = false;
-                r.last_text.clear();
-            }
-            Some("message_start") if ev["message"]["role"] == "assistant" => {
-                self.run.lock().unwrap().extractor.reset();
-            }
-            Some("message_update") => {
-                let ame = &ev["assistantMessageEvent"];
-                if ame["type"] == "text_delta" {
-                    if let Some(d) = ame["delta"].as_str() {
-                        let out = {
-                            let mut r = self.run.lock().unwrap();
-                            let out = r.extractor.push(d);
-                            if r.extractor.started() {
-                                r.spoke = true;
-                            }
-                            out
-                        };
-                        self.apply(out);
-                    }
-                }
-            }
-            Some("message_end") if ev["message"]["role"] == "assistant" => {
-                let text: String = ev["message"]["content"]
-                    .as_array()
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter(|b| b["type"] == "text")
-                            .filter_map(|b| b["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-                let out = {
-                    let mut r = self.run.lock().unwrap();
-                    if !text.trim().is_empty() {
-                        r.last_text = text;
-                    }
-                    r.extractor.finish()
-                };
-                self.apply(out);
-            }
-            Some("agent_settled") => {
-                let aborted = ev["aborted"].as_bool().unwrap_or(false);
-                let fallback = {
-                    let r = self.run.lock().unwrap();
-                    (!r.spoke && !aborted && !r.last_text.is_empty()).then(|| speech::fallback_speech(&r.last_text))
-                };
-                if let Some(t) = fallback.filter(|t| !t.is_empty()) {
-                    self.speak_text(&t);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn apply(self: &Arc<Self>, out: Vec<Speech>) {
-        for s in out {
-            match s {
-                Speech::Word(w) => self.speak_word(w),
-                Speech::End => self.speak_end(),
-            }
-        }
-    }
-
     // ---------- Niveaux pour l'égaliseur ----------
 
     async fn levels_loop(self: Arc<Self>) {
         let mut analyzer = Analyzer::new();
-        let (mut out_gain, mut in_gain) = (DisplayGain::new(), DisplayGain::new());
-        let (mut out_g, mut in_g) = (1.0, 1.0);
+        let mut gain = DisplayGain::new();
+        let mut g = 1.0;
         let mut tick = tokio::time::interval(Duration::from_millis(22));
-        let mut was_speaking = false;
         loop {
             tick.tick().await;
-            let (out, out_rms, out_wave) = {
-                let ring = self.audio.out_ring.lock().unwrap();
-                let (b, r) = analyzer.bands(&ring, out_g);
-                (b, r, Analyzer::wave(&ring, out_g))
-            };
-            let (inp, in_rms, in_wave) = {
+            let (inp, rms, wave) = {
                 let ring = self.audio.in_ring.lock().unwrap();
-                let (b, r) = analyzer.bands(&ring, in_g);
-                (b, r, Analyzer::wave(&ring, in_g))
+                let (b, r) = analyzer.bands(&ring, g);
+                (b, r, Analyzer::wave(&ring, g))
             };
             // Gain du prochain tour, d'après le niveau brut de celui-ci.
-            out_g = out_gain.update(out_rms);
-            in_g = in_gain.update(in_rms);
-            let _ = self.app.emit(
-                "audio-levels",
-                json!({ "out": out, "in": inp, "outRms": out_rms, "inRms": in_rms, "outWave": out_wave, "inWave": in_wave }),
-            );
-            let speaking = self.agent_speaking();
-            if speaking != was_speaking {
-                was_speaking = speaking;
-                if !speaking {
-                    let mut t = self.turn.lock().unwrap();
-                    t.echo_until = Some(Instant::now() + ECHO_TAIL);
-                }
-                let _ = self.app.emit("voice-speaking", speaking);
-            }
+            g = gain.update(rms);
+            let _ = self.app.emit("audio-levels", json!({ "in": inp, "inRms": rms, "inWave": wave }));
         }
     }
 }
@@ -817,14 +418,10 @@ impl VoiceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn outgoing_messages_are_tagged_maps() {
-        let b = rmp_serde::to_vec_named(&TtsOut::Text { text: "salut".into() }).unwrap();
-        let v: Value = rmp_serde::from_slice(&b).unwrap();
-        assert_eq!(v, json!({ "type": "Text", "text": "salut" }));
-        let b = rmp_serde::to_vec_named(&TtsOut::Eos).unwrap();
-        assert_eq!(rmp_serde::from_slice::<Value>(&b).unwrap(), json!({ "type": "Eos" }));
         let b = rmp_serde::to_vec_named(&SttOut::Audio { pcm: &[0.5, -0.25] }).unwrap();
         assert_eq!(rmp_serde::from_slice::<Value>(&b).unwrap(), json!({ "type": "Audio", "pcm": [0.5, -0.25] }));
         let b = rmp_serde::to_vec_named(&SttOut::Flush).unwrap();
@@ -841,22 +438,5 @@ mod tests {
         assert!(matches!(rmp_serde::from_slice::<SttMsg>(&flushed).unwrap(), SttMsg::Flushed));
         let end = rmp_serde::to_vec_named(&json!({ "type": "EndWord", "stop_time": 1.0 })).unwrap();
         assert!(matches!(rmp_serde::from_slice::<SttMsg>(&end).unwrap(), SttMsg::Other));
-        let audio = rmp_serde::to_vec_named(&json!({ "type": "Audio", "pcm": [0.0, 0.1] })).unwrap();
-        assert!(matches!(rmp_serde::from_slice::<TtsMsg>(&audio).unwrap(), TtsMsg::Audio { pcm } if pcm.len() == 2));
-    }
-
-    #[test]
-    fn echo_matching_tolerates_transcription_noise() {
-        let words: HashSet<String> = ["pas", "de", "souci", "reconnaissance", "vocale"].iter().map(|s| s.to_string()).collect();
-        assert!(is_echo(&words, "soucis"));
-        assert!(is_echo(&words, "reconnaissances"));
-        assert!(is_echo(&words, "pas"));
-        assert!(!is_echo(&words, "attends"));
-        assert!(!is_echo(&words, "stop"));
-    }
-
-    #[test]
-    fn voice_param_is_escaped() {
-        assert_eq!(url_escape("cml-tts/fr/a b.wav"), "cml-tts%2Ffr%2Fa%20b.wav");
     }
 }

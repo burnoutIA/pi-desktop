@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Visualisation de la voix, en trois styles :
+  // Visualisation du micro, en trois styles :
   //  - « bars »     : une barre par bande de fréquence, en miroir (graves au centre) ;
   //  - « wave »     : la forme d'onde brute, en trait fin lumineux (esprit oscilloscope) ;
   //  - « spectrum » : le spectre en courbe lisse et pleine, en miroir.
@@ -7,16 +7,13 @@
   import type { VizStyle } from "../lib/viz";
 
   type Props = {
-    agent: number[];
     user: number[];
-    agentActive: boolean;
     userActive: boolean;
     /** Forme d'onde récente (millièmes), pour le style « wave ». */
-    agentWave?: number[];
     userWave?: number[];
     style?: VizStyle;
   };
-  let { agent, user, agentActive, userActive, agentWave = [], userWave = [], style = "bars" }: Props = $props();
+  let { user, userActive, userWave = [], style = "bars" }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let wrap: HTMLDivElement;
@@ -24,7 +21,6 @@
   onMount(() => {
     const ctx = canvas.getContext("2d")!;
     let raf = 0;
-    let shownA: number[] = [];
     let shownU: number[] = [];
     let t0 = performance.now();
 
@@ -32,8 +28,7 @@
     let palette: Record<string, string> = {};
     const readColors = () => {
       const st = getComputedStyle(document.documentElement);
-      for (const n of ["--agent-1", "--agent-2", "--user-1", "--user-2", "--eq-idle"]) palette[n] = st.getPropertyValue(n).trim();
-      palette.text = st.getPropertyValue("--text-strong").trim();
+      for (const n of ["--user-1", "--user-2", "--eq-idle"]) palette[n] = st.getPropertyValue(n).trim();
       palette.mode = document.documentElement.dataset.mode ?? "dark";
     };
     readColors();
@@ -64,7 +59,6 @@
     };
 
     // ---------- Style « wave » : la forme d'onde, en trait fin lumineux ----------
-    let shownWA: number[] = [];
     let shownWU: number[] = [];
     /** Lissage d'une image à l'autre (les niveaux arrivent à ~45/s, l'écran à 60/s). */
     const easeWave = (shown: number[], target: number[], active: boolean) => {
@@ -196,26 +190,18 @@
       const h = canvas.height / (window.devicePixelRatio || 1);
       ctx.clearRect(0, 0, w, h);
       if (style === "wave") {
-        shownWA = easeWave(shownWA, agentWave, agentActive);
         shownWU = easeWave(shownWU, userWave, userActive);
-        const qa = quiet(shownWA);
-        const qu = quiet(shownWU);
-        if (qa && qu) drawFlat(w, h);
-        // Trait clair (texte fort) à faible opacité, halo à la couleur de celui qui parle.
-        if (!qa) drawWave(shownWA, w, h, palette.text, col("--agent-1"), 0.55);
-        if (!qu) drawWave(shownWU, w, h, col("--user-1"), col("--user-2"), qa ? 0.75 : 0.6);
+        if (quiet(shownWU)) drawFlat(w, h);
+        else drawWave(shownWU, w, h, col("--user-1"), col("--user-2"), 0.75);
         stats.draws.push(performance.now() - t0draw);
         raf = requestAnimationFrame(frame);
         return;
       }
-      shownA = ease(shownA, agent, agentActive);
       shownU = ease(shownU, user, userActive);
 
-      const silentA = shownA.every((v) => v < 0.01);
-      const silentU = shownU.every((v) => v < 0.01);
-      if (silentA && silentU) {
+      if (shownU.every((v) => v < 0.01)) {
         // Repos : ligne de points qui respire très légèrement.
-        const n = Math.max(agent.length, 40) * 2;
+        const n = Math.max(user.length, 40) * 2;
         const breathe = 0.35 + 0.15 * Math.sin((now - t0) / 900);
         ctx.fillStyle = col("--eq-idle");
         ctx.globalAlpha = breathe;
@@ -228,8 +214,7 @@
         ctx.globalAlpha = 1;
       } else {
         const layer = style === "spectrum" ? drawSpectrum : drawLayer;
-        if (!silentA) layer(shownA, w, h, col("--agent-1"), col("--agent-2"), 1);
-        if (!silentU) layer(shownU, w, h, col("--user-1"), col("--user-2"), silentA ? 1 : 0.85);
+        layer(shownU, w, h, col("--user-1"), col("--user-2"), 1);
       }
       stats.draws.push(performance.now() - t0draw);
       if (stats.gaps.length > 2000) (stats.gaps.splice(0, 1000), stats.draws.splice(0, 1000));

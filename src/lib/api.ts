@@ -1,17 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/** Réglages de la dictée : pi ne parle pas, seule ta voix est transcrite. */
 export type VoiceConfig = {
   sttUrl: string;
-  ttsUrl: string;
-  voice: string;
-  ttsEnabled: boolean;
-  /** Nom de l'agent : l'agent vocal se présente ainsi. */
-  agentName: string;
-  /** Agent vocal : répond tout de suite et transmet à pi ce qui est à faire, même quand pi travaille. */
-  voiceAgent: boolean;
-  /** Serveur compatible OpenAI de l'agent vocal (harn par défaut). */
-  agentUrl: string;
 };
 
 export type GitFile = { path: string; status: GitStatusKind };
@@ -53,13 +45,11 @@ export type DotAction = "start" | "stop" | "remove" | "use-rpc" | "import";
 
 export type PromptFile = { path: string; content: string; exists: boolean };
 
+/** Niveaux du micro pour l'égaliseur. */
 export type AudioLevels = {
-  out: number[];
   in: number[];
-  outRms: number;
   inRms: number;
   /** Forme d'onde récente en millièmes (vide dans le silence). */
-  outWave?: number[];
   inWave?: number[];
 };
 
@@ -77,7 +67,6 @@ export const api = {
   dotsAction: (action: DotAction, dir: string) => invoke<string>("dots_action", { action, dir }),
   piStop: (run: string) => invoke<void>("pi_stop", { run }),
   watchDir: (cwd: string) => invoke<void>("watch_dir", { cwd }),
-  voiceSetActiveRun: (run: string) => invoke<void>("voice_set_active_run", { run }),
   quitApp: () => invoke<void>("quit_app"),
   worktreeCreate: (root: string, label: string) => invoke<{ path: string; branch: string; base: string }>("worktree_create", { root, label }),
   worktreeInfo: (root: string, path: string, branch: string, base: string) =>
@@ -92,11 +81,6 @@ export const api = {
   piSend: (run: string, cmd: Record<string, unknown>) => invoke<any>("pi_send", { run, cmd }),
   piWrite: (run: string, record: Record<string, unknown>) => invoke<void>("pi_write", { run, record }),
   listen: (on: boolean, submit = false) => invoke<void>("voice_listen", { on, submit }),
-  stopSpeaking: () => invoke<void>("voice_stop_speaking"),
-  speak: (text: string) => invoke<void>("voice_speak", { text }),
-  voiceAgentAsk: (run: string, text: string, piState: string, piModel: string | null) =>
-    invoke<void>("voice_agent_ask", { run, text, piState, piModel }),
-  voiceAgentReset: (run: string | null = null) => invoke<void>("voice_agent_reset", { run }),
   getVoiceConfig: () => invoke<VoiceConfig>("voice_get_config"),
   setVoiceConfig: (config: VoiceConfig) => invoke<void>("voice_set_config", { config }),
   sttConnected: () => invoke<boolean>("voice_stt_connected"),
@@ -137,34 +121,3 @@ export function on<T>(event: string, cb: (payload: T) => void): Promise<Unlisten
   return listen<T>(event, (e) => cb(e.payload));
 }
 
-/** Voix de Pocket TTS (modèle français). Estelle est la seule d'origine française ; les autres
- * gardent le timbre de leur langue d'origine et parlent français avec le modèle français. */
-export const FRENCH_VOICES: { id: string; label: string }[] = [
-  { id: "estelle", label: "Estelle · française" },
-  { id: "alba", label: "Alba · timbre anglais" },
-  { id: "anna", label: "Anna · timbre anglais" },
-  { id: "azelma", label: "Azelma · timbre anglais" },
-  { id: "caro_davy", label: "Caro Davy · timbre anglais" },
-  { id: "cosette", label: "Cosette · timbre anglais" },
-  { id: "eponine", label: "Eponine · timbre anglais" },
-  { id: "eve", label: "Eve · timbre anglais" },
-  { id: "fantine", label: "Fantine · timbre anglais" },
-  { id: "jane", label: "Jane · timbre anglais" },
-  { id: "mary", label: "Mary · timbre anglais" },
-  { id: "vera", label: "Vera · timbre anglais" },
-  { id: "bill_boerst", label: "Bill Boerst · timbre anglais" },
-  { id: "charles", label: "Charles · timbre anglais" },
-  { id: "george", label: "George · timbre anglais" },
-  { id: "javert", label: "Javert · timbre anglais" },
-  { id: "jean", label: "Jean · timbre anglais" },
-  { id: "marius", label: "Marius · timbre anglais" },
-  { id: "michael", label: "Michael · timbre anglais" },
-  { id: "paul", label: "Paul · timbre anglais" },
-  { id: "peter_yearsley", label: "Peter Yearsley · timbre anglais" },
-  { id: "stuart_bell", label: "Stuart Bell · timbre anglais" },
-  { id: "lola", label: "Lola · timbre espagnol" },
-  { id: "giovanni", label: "Giovanni · timbre italien" },
-  { id: "juergen", label: "Juergen · timbre allemand" },
-  { id: "rafael", label: "Rafael · timbre portugais" },
-  { id: "daan", label: "Daan · timbre néerlandais" },
-];

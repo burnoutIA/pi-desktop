@@ -3,41 +3,33 @@
   import type { VizStyle } from "../lib/viz";
 
   type Props = {
-    agentLevels: number[];
     userLevels: number[];
     inRms: number;
-    speaking: boolean;
     listening: boolean;
     busy: boolean;
     sttUp: boolean;
     voiceBooting: boolean;
     agentName: string;
     onMic: () => void;
-    onStopVoice: () => void;
     /** Mode zen : la voix seule, en grand, au centre de la fenêtre. */
     zen?: boolean;
-    /** Sous-titre du mode zen (ta transcription, ou ce que dit l'agent). */
+    /** Sous-titre du mode zen (ta transcription). */
     subtitle?: string;
     vizStyle?: VizStyle;
-    agentWave?: number[];
     userWave?: number[];
   };
   let {
-    agentLevels,
     userLevels,
     inRms,
-    speaking,
     listening,
     busy,
     sttUp,
     voiceBooting,
     agentName,
     onMic,
-    onStopVoice,
     zen = false,
     subtitle = "",
     vizStyle = "bars",
-    agentWave = [],
     userWave = [],
   }: Props = $props();
 
@@ -48,24 +40,19 @@
         : "Serveur de transcription injoignable"
       : listening
         ? "Je t'écoute…"
-        : speaking
-          ? `${agentName} parle — Espace pour lui couper la parole`
-          : busy
-            ? `${agentName} travaille…`
-            : "",
+        : busy
+          ? `${agentName} travaille…`
+          : "",
   );
   const ring = $derived(listening ? Math.min(1, inRms * 14) : 0);
 </script>
 
-<div class="stage" class:zen class:wave={vizStyle === "wave"} class:speaking class:listening class:idle={!zen && !speaking && !listening && !busy && sttUp}>
+<div class="stage" class:zen class:wave={vizStyle === "wave"} class:listening class:idle={!zen && !listening && !busy && sttUp}>
   <div class="glow"></div>
   <div class="eq-wrap">
     <Equalizer
-      agent={agentLevels}
       user={userLevels}
-      agentActive={speaking}
       userActive={listening}
-      {agentWave}
       {userWave}
       style={vizStyle}
     />
@@ -89,13 +76,6 @@
         >
       {/if}
     </button>
-    {#if speaking}
-      <button class="hush" onclick={onStopVoice} title="Couper la voix (Échap)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          ><path d="M11 5 6 9H2v6h4l5 4V5Z" /><path d="m22 9-6 6M16 9l6 6" /></svg
-        >
-      </button>
-    {/if}
   </div>
   <div class="label" class:warn={!sttUp && !voiceBooting}>{label || (zen ? "Espace pour parler" : "")}</div>
   {#if zen}
@@ -175,17 +155,13 @@
     position: absolute;
     inset: -40% 10% auto;
     height: 200px;
-    background: radial-gradient(closest-side, var(--agent-glow), transparent);
+    background: radial-gradient(closest-side, var(--user-soft), transparent);
     opacity: 0;
     transition: opacity 0.6s;
     pointer-events: none;
   }
-  .stage.speaking .glow {
-    opacity: 1;
-  }
   .stage.listening .glow {
     opacity: 1;
-    background: radial-gradient(closest-side, var(--user-soft), transparent);
   }
   .eq-wrap {
     width: min(100%, 760px);
@@ -254,22 +230,6 @@
       transform 0.08s linear,
       opacity 0.08s linear;
     pointer-events: none;
-  }
-  .hush {
-    position: absolute;
-    left: calc(100% + 14px);
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    color: var(--text-2);
-    border: 1px solid var(--line-2);
-    background: var(--panel);
-  }
-  .hush:hover {
-    color: var(--text);
-    border-color: var(--agent-1);
   }
   .label {
     font-size: 12.5px;

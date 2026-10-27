@@ -1,18 +1,17 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { Item, Session } from "../lib/session.svelte";
-  import { splitOral, toolPath } from "../lib/session.svelte";
+  import { stripOral, toolPath } from "../lib/session.svelte";
   import { renderBlock, splitBlocks } from "../lib/markdown";
 
   type Props = {
     session: Session;
     root: string;
     onOpenFile: (path: string) => void;
-    onReplay: (text: string) => void;
     agentName: string;
     onOpenProject: () => void;
   };
-  let { session, root, onOpenFile, onReplay, agentName, onOpenProject }: Props = $props();
+  let { session, root, onOpenFile, agentName, onOpenProject }: Props = $props();
 
   let scroller: HTMLDivElement;
   let stick = true;
@@ -122,7 +121,7 @@
       </div>
     {:else if it.kind === "assistant"}
       {@const think = thinking(it)}
-      {@const { body, oral } = splitOral(textBlocks(it))}
+      {@const body = stripOral(textBlocks(it))}
       <div class="row">
         <div class="assistant">
           {#if think}
@@ -138,18 +137,6 @@
               {#each splitBlocks(body) as block, bi (bi)}
                 <div class="md-block">{@html renderBlock(block)}</div>
               {/each}
-            </div>
-          {/if}
-          {#if oral}
-            <div class="oral">
-              <button class="oral-btn" title="Réécouter" onclick={() => onReplay(oral)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                  ><path d="M11 5 6 9H2v6h4l5 4V5Z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path
-                    d="M19 5a10 10 0 0 1 0 14"
-                  /></svg
-                >
-              </button>
-              <span class="selectable">{oral}</span>
             </div>
           {/if}
           {#if it.streaming && !body && !think}
@@ -178,15 +165,6 @@
           {#if open[it.id] && it.output}
             <pre class="tool-out selectable">{it.output.length > 6000 ? it.output.slice(0, 6000) + "\n…" : it.output}</pre>
           {/if}
-        </div>
-      </div>
-    {:else if it.kind === "voice"}
-      <div class="row voice {it.who}">
-        <div class="voice-b selectable">
-          <span class="voice-who">{it.who === "user" ? "🎙 toi" : agentName}</span>
-          {it.text}
-          {#if it.action === "transmettre"}<span class="voice-tag">→ transmis à pi</span>{/if}
-          {#if it.action === "arreter"}<span class="voice-tag">■ pi arrêté</span>{/if}
         </div>
       </div>
     {:else}
@@ -300,21 +278,6 @@
   .shimmer {
     animation: pulse 1.4s ease-in-out infinite;
   }
-  .oral {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    padding: 10px 14px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, var(--agent-soft), var(--agent-2-soft));
-    border: 1px solid var(--agent-line);
-    color: var(--text);
-  }
-  .oral-btn {
-    flex: none;
-    color: var(--agent-2);
-    margin-top: 2px;
-  }
   .typing {
     display: flex;
     gap: 4px;
@@ -415,28 +378,6 @@
     to {
       transform: rotate(360deg);
     }
-  }
-  .row.voice.user {
-    justify-content: flex-end;
-  }
-  .voice-b {
-    max-width: 70%;
-    font-size: 13px;
-    color: var(--text-2);
-    padding: 6px 12px;
-    border-radius: 12px;
-    border: 1px dashed var(--line-2);
-    line-height: 1.45;
-  }
-  .voice-who {
-    color: var(--text-3);
-    font-size: 11px;
-    margin-right: 6px;
-  }
-  .voice-tag {
-    margin-left: 8px;
-    font-size: 11px;
-    color: var(--text-3);
   }
   .notice {
     align-self: center;

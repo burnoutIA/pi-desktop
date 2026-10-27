@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FRENCH_VOICES, api, type AgentConfig, type VoiceConfig } from "../lib/api";
+  import { api, type AgentConfig, type VoiceConfig } from "../lib/api";
   import { PALETTES, loadThemePref, previewTokens, resolveMode, saveThemePref, type ModePref } from "../lib/theme";
   import { VIZ_STYLES, loadViz, saveViz, type VizStyle } from "../lib/viz";
 
@@ -118,7 +118,7 @@
         placeholder="pi"
         onchange={(e) => setAgent("name", (e.target as HTMLInputElement).value.trim())}
       />
-      <small>L'agent vocal se présente sous ce nom.</small>
+      <small>L'agent se présente sous ce nom.</small>
     </label>
 
     {#if models.length}
@@ -254,55 +254,10 @@
       </div>
     </div>
   {:else}
+    <p class="hint">Dictée seule : ta voix est transcrite, {agent.name || "pi"} répond à l'écrit.</p>
     <label class="field">
-      <span>Voix de {agent.name || "pi"}</span>
-      <div class="voice-row">
-        <select value={config.voice} onchange={(e) => set("voice", (e.target as HTMLSelectElement).value)}>
-          {#each FRENCH_VOICES as v (v.id)}
-            <option value={v.id}>{v.label}</option>
-          {/each}
-          {#if !FRENCH_VOICES.some((v) => v.id === config.voice)}
-            <option value={config.voice}>{config.voice}</option>
-          {/if}
-        </select>
-        <button
-          class="try"
-          onclick={() => api.speak(`Bonjour, je suis ${agent.name || "pi"}. Dis-moi ce que tu veux construire.`)}
-        >
-          Écouter
-        </button>
-      </div>
-    </label>
-
-    <label class="toggle">
-      <input type="checkbox" checked={config.ttsEnabled} onchange={(e) => set("ttsEnabled", (e.target as HTMLInputElement).checked)} />
-      <span><b>Lecture vocale</b><small>lit son résumé à la fin de chaque réponse</small></span>
-    </label>
-
-    <label class="toggle">
-      <input type="checkbox" checked={config.voiceAgent} onchange={(e) => set("voiceAgent", (e.target as HTMLInputElement).checked)} />
-      <span
-        ><b>Agent vocal</b><small
-          >ce que tu dis passe d'abord par lui : il répond tout de suite, même quand pi travaille, et transmet à pi ce
-          qui est à faire. Le clavier va toujours directement à pi.</small
-        ></span
-      >
-    </label>
-    {#if config.voiceAgent}
-      <label class="field">
-        <span>Serveur de l'agent vocal (compatible OpenAI, harn par défaut)</span>
-        <input value={config.agentUrl} onchange={(e) => set("agentUrl", (e.target as HTMLInputElement).value)} />
-      </label>
-    {/if}
-
-    <div class="title sub">Serveurs Kyutai</div>
-    <label class="field">
-      <span>Transcription (STT)</span>
+      <span>Serveur de transcription (STT)</span>
       <input value={config.sttUrl} onchange={(e) => set("sttUrl", (e.target as HTMLInputElement).value)} />
-    </label>
-    <label class="field">
-      <span>Synthèse (TTS)</span>
-      <input value={config.ttsUrl} onchange={(e) => set("ttsUrl", (e.target as HTMLInputElement).value)} />
     </label>
   {/if}
 </div>
@@ -348,18 +303,6 @@
     color: var(--text);
     border-bottom-color: var(--agent-1);
   }
-  .title {
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    font-weight: 600;
-  }
-  .title.sub {
-    margin-top: 4px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-  }
   .field {
     display: flex;
     flex-direction: column;
@@ -376,10 +319,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-  }
-  .voice-row {
-    display: flex;
-    gap: 8px;
   }
   select,
   input:not([type="checkbox"]):not([type="range"]),
@@ -590,25 +529,8 @@
     border-color: var(--agent-1);
     color: var(--text);
   }
-  .toggle {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    cursor: pointer;
-  }
-  .toggle input {
-    margin-top: 3px;
-    accent-color: var(--agent-1);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-  }
-  .toggle b {
-    font-weight: 500;
-    font-size: 13px;
-  }
-  .toggle small {
+  .hint {
+    margin: 0;
     color: var(--text-3);
     font-size: 12px;
   }

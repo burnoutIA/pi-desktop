@@ -1,4 +1,4 @@
-//! Entrée micro + sortie haut-parleur (cpal) et analyse spectrale pour l'égaliseur.
+//! Entrée micro (cpal) et analyse spectrale pour l'égaliseur.
 
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -13,41 +13,7 @@ pub const MODEL_RATE: u32 = 24_000;
 pub const BANDS: usize = 40;
 const FFT_SIZE: usize = 2048;
 
-/// File d'échantillons TTS (24 kHz) lue par le callback de sortie.
-#[derive(Default)]
-pub struct Playback {
-    queue: VecDeque<f32>,
-    frac: f64,
-}
-
-impl Playback {
-    pub fn push(&mut self, pcm: &[f32]) {
-        self.queue.extend(pcm.iter().copied());
-    }
-    pub fn clear(&mut self) {
-        self.queue.clear();
-        self.frac = 0.0;
-    }
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-    /// Échantillon suivant au débit de sortie (interpolation linéaire).
-    fn next(&mut self, step: f64) -> f32 {
-        let s = match (self.queue.front(), self.queue.get(1)) {
-            (Some(&a), Some(&b)) => a + (b - a) * self.frac as f32,
-            (Some(&a), None) => a,
-            _ => return 0.0,
-        };
-        self.frac += step;
-        while self.frac >= 1.0 && !self.queue.is_empty() {
-            self.queue.pop_front();
-            self.frac -= 1.0;
-        }
-        s
-    }
-}
-
-/// Derniers échantillons entendus / captés, pour la FFT.
+/// Derniers échantillons captés, pour la FFT.
 pub struct Ring {
     data: VecDeque<f32>,
     pub rate: u32,
@@ -68,8 +34,6 @@ impl Ring {
 pub struct AudioShared {
     /// Nombre d'échantillons reçus du micro (pour détecter un micro muet).
     pub mic_samples: std::sync::atomic::AtomicU64,
-    pub playback: Mutex<Playback>,
-    pub out_ring: Mutex<Ring>,
     pub in_ring: Mutex<Ring>,
 }
 
@@ -77,34 +41,23 @@ impl AudioShared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             mic_samples: std::sync::atomic::AtomicU64::new(0),
-            playback: Mutex::new(Playback::default()),
-            out_ring: Mutex::new(Ring::new()),
             in_ring: Mutex::new(Ring::new()),
         })
     }
 }
 
-/// Démarre les flux audio dans un thread dédié (les `Stream` cpal y restent vivants).
+/// Démarre le micro dans un thread dédié (le `Stream` cpal y reste vivant).
 /// Retourne la fréquence d'échantillonnage du micro.
 /// Chaque consommateur du micro (aujourd'hui, le STT seul) reçoit sa copie des échantillons.
 pub fn start(shared: Arc<AudioShared>, mic_tx: Vec<UnboundedSender<Vec<f32>>>) -> Result<u32> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u32, String>>();
     std::thread::Builder::new().name("audio".into()).spawn(move || {
         let host = cpal::default_host();
-        let run = || -> Result<(cpal::Stream, cpal::Stream, u32)> {
-            let out_dev = host.default_output_device().ok_or_else(|| anyhow!("aucune sortie audio"))?;
+        let run = || -> Result<(cpal::Stream, u32)> {
             let in_dev = host.default_input_device().ok_or_else(|| anyhow!("aucun micro"))?;
-            let out_cfg = out_dev.default_output_config()?;
             let in_cfg = in_dev.default_input_config()?;
             let name = |d: &cpal::Device| d.description().map(|x| x.name().to_string()).unwrap_or_default();
-            crate::applog!("audio : sortie « {} » {:?}", name(&out_dev), out_cfg);
             crate::applog!("audio : micro « {} » {:?}", name(&in_dev), in_cfg);
-            let out_stream = match out_cfg.sample_format() {
-                SampleFormat::F32 => build_output::<f32>(&out_dev, out_cfg.config(), shared.clone())?,
-                SampleFormat::I16 => build_output::<i16>(&out_dev, out_cfg.config(), shared.clone())?,
-                SampleFormat::U16 => build_output::<u16>(&out_dev, out_cfg.config(), shared.clone())?,
-                f => return Err(anyhow!("format de sortie non géré : {f:?}")),
-            };
             let in_rate = in_cfg.config().sample_rate;
             let in_stream = match in_cfg.sample_format() {
                 SampleFormat::F32 => build_input::<f32>(&in_dev, in_cfg.config(), shared.clone(), mic_tx.clone())?,
@@ -112,12 +65,11 @@ pub fn start(shared: Arc<AudioShared>, mic_tx: Vec<UnboundedSender<Vec<f32>>>) -
                 SampleFormat::U16 => build_input::<u16>(&in_dev, in_cfg.config(), shared.clone(), mic_tx.clone())?,
                 f => return Err(anyhow!("format micro non géré : {f:?}")),
             };
-            out_stream.play()?;
             in_stream.play()?;
-            Ok((out_stream, in_stream, in_rate))
+            Ok((in_stream, in_rate))
         };
         match run() {
-            Ok((_o, _i, rate)) => {
+            Ok((_i, rate)) => {
                 let _ = ready_tx.send(Ok(rate));
                 loop {
                     std::thread::park();
@@ -129,34 +81,6 @@ pub fn start(shared: Arc<AudioShared>, mic_tx: Vec<UnboundedSender<Vec<f32>>>) -
         }
     })?;
     ready_rx.recv()?.map_err(|e| anyhow!(e))
-}
-
-fn build_output<T>(dev: &cpal::Device, config: StreamConfig, shared: Arc<AudioShared>) -> Result<cpal::Stream>
-where
-    T: SizedSample + FromSample<f32>,
-{
-    let channels = config.channels as usize;
-    let rate = config.sample_rate;
-    let step = MODEL_RATE as f64 / rate as f64;
-    shared.out_ring.lock().unwrap().rate = rate;
-    let stream = dev.build_output_stream(
-        config,
-        move |data: &mut [T], _| {
-            let mut pb = shared.playback.lock().unwrap();
-            let mut ring = shared.out_ring.lock().unwrap();
-            for frame in data.chunks_mut(channels) {
-                let s = pb.next(step);
-                ring.push(s);
-                let v = T::from_sample(s);
-                for x in frame.iter_mut() {
-                    *x = v;
-                }
-            }
-        },
-        |e| crate::applog!("audio : erreur sortie : {e}"),
-        None,
-    )?;
-    Ok(stream)
 }
 
 fn build_input<T>(
@@ -229,8 +153,8 @@ impl Resampler {
     }
 }
 
-/// Gain d'affichage automatique : ramène le niveau de la voix (micro ou synthèse) à une même
-/// cible, pour que l'égaliseur réagisse autant à l'utilisateur qu'à l'IA.
+/// Gain d'affichage automatique : ramène le niveau de la voix à une même cible, pour que
+/// l'égaliseur réagisse pareil quel que soit le micro.
 pub struct DisplayGain {
     env: f32,
 }
@@ -320,13 +244,5 @@ mod tests {
         let mut out = Vec::new();
         r.process(&vec![0.5; 4800], &mut out);
         assert!((out.len() as i32 - 2400).abs() <= 1, "{}", out.len());
-    }
-
-    #[test]
-    fn playback_upsamples() {
-        let mut p = Playback::default();
-        p.push(&vec![1.0; 240]);
-        let n = (0..1000).take_while(|_| p.next(0.5) != 0.0).count();
-        assert!((n as i32 - 480).abs() <= 2, "{n}");
     }
 }

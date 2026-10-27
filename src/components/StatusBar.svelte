@@ -5,7 +5,6 @@
     piUp: boolean;
     hasProject: boolean;
     busy: boolean;
-    speaking: boolean;
     listening: boolean;
     sttUp: boolean;
     voiceBooting: boolean;
@@ -20,14 +19,13 @@
   let p: Props = $props();
 
   const state = $derived(
-    !p.hasProject ? "noproject" : !p.piUp ? "down" : p.listening ? "listening" : p.speaking ? "speaking" : p.busy ? "busy" : "idle",
+    !p.hasProject ? "noproject" : !p.piUp ? "down" : p.listening ? "listening" : p.busy ? "busy" : "idle",
   );
   const label = $derived(
     {
       noproject: "Aucun projet ouvert — Ctrl+O",
       down: "pi arrêté — cliquer pour relancer",
       listening: "Je t'écoute",
-      speaking: `${p.agentName} parle`,
       busy: p.runningTool ? `${p.agentName} travaille · ${p.runningTool}` : `${p.agentName} réfléchit…`,
       idle: "Prêt",
     }[state],
@@ -130,10 +128,6 @@
     background: var(--user-2);
     color: var(--on-user);
   }
-  .speaking .main {
-    background: var(--agent-1);
-    color: var(--on-accent);
-  }
   .busy .main {
     color: var(--on-accent);
     background: repeating-linear-gradient(
@@ -150,7 +144,6 @@
     color: #fff;
   }
   .listening .pulse,
-  .speaking .pulse,
   .busy .pulse,
   .down .pulse {
     background: currentColor;

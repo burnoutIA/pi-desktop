@@ -1,4 +1,4 @@
-//! Serveurs vocaux gérés par l'app : au lancement, si la voix ne répond pas, on démarre
+//! Serveur de transcription géré par l'app : au lancement, s'il ne répond pas, on démarre
 //! `scripts/voice-server.sh` ; à la fermeture, on arrête ce qu'on a démarré (GPU libéré).
 //! Des serveurs déjà lancés à la main sont utilisés tels quels et jamais arrêtés.
 
@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-const PORTS: [(u16, &str); 2] = [(8090, "transcription"), (8089, "synthèse")];
+const PORTS: [(u16, &str); 1] = [(8090, "transcription")];
 /// Premier chargement des modèles : ~30 s d'habitude, beaucoup plus la toute première fois.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(600);
 

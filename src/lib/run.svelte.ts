@@ -36,8 +36,6 @@ export class Run {
   /** Dialogues des extensions de pi en attente de réponse. */
   uiRequests = $state<any[]>([]);
   attention = $state<Attention>(null);
-  /** Résumé oral produit pendant que le run était en arrière-plan : lu quand on y revient. */
-  pendingOral = $state<string | null>(null);
   /** Sessions déjà titrées (titre généré une fois). */
   titled = new Set<string>();
 

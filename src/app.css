@@ -26,7 +26,6 @@
   /* Transparences dérivées de la palette (voir lib/theme.ts) */
   --agent-faint: color-mix(in srgb, var(--agent-1) 7%, transparent);
   --agent-soft: color-mix(in srgb, var(--agent-1) var(--soft-pct, 15%), transparent);
-  --agent-glow: color-mix(in srgb, var(--agent-1) 20%, transparent);
   --agent-line: color-mix(in srgb, var(--agent-1) 30%, transparent);
   --agent-2-soft: color-mix(in srgb, var(--agent-2) var(--soft-2-pct, 10%), transparent);
   --user-soft: color-mix(in srgb, var(--user-1) 16%, transparent);

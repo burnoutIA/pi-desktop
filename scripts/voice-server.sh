@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Lance les serveurs vocaux en local, tous les deux sur le processeur (aucune mémoire GPU) :
+# Lance le serveur de transcription en local, sur le processeur (aucune mémoire GPU) :
 #   STT français  -> ws://127.0.0.1:8090/api/asr-streaming  (Parakeet TDT 0.6B v3)
-#   TTS français  -> ws://127.0.0.1:8089/api/tts_streaming  (Pocket TTS)
-# Le premier lancement installe leurs dépendances (uv) et télécharge les modèles (~3 Go au total).
-# Usage : scripts/voice-server.sh [stt|tts|all]   (all par défaut)
+# Le premier lancement installe ses dépendances (uv) et télécharge le modèle.
+# Usage : scripts/voice-server.sh [stt]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WHAT="${1:-all}"
+WHAT="${1:-stt}"
 
 # Lancé depuis le menu des applications, le PATH ne contient pas toujours nos outils.
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.local/node/bin:$PATH"
@@ -23,10 +22,8 @@ run() { # nom port script
 }
 
 case "$WHAT" in
-  stt) run stt 8090 parakeet-stt-server.py ;;
-  tts) run tts 8089 pocket-tts-server.py ;;
-  all) run stt 8090 parakeet-stt-server.py; run tts 8089 pocket-tts-server.py ;;
-  *) echo "usage : $0 [stt|tts|all]"; exit 1 ;;
+  stt|all) run stt 8090 parakeet-stt-server.py ;;
+  *) echo "usage : $0 [stt]"; exit 1 ;;
 esac
 trap 'kill 0' INT TERM
 # Lancé par l'app : si elle disparaît (fermeture, plantage), on arrête tout.

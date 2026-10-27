@@ -1,11 +1,11 @@
 <script lang="ts">
   // Fond d'ambiance du mode zen : de grandes nappes douces aux couleurs de la palette, qui
-  // dérivent lentement et « respirent » avec la voix (energy : 0 = silence, 1 = voix forte).
+  // dérivent lentement et « respirent » avec ta voix (energy : 0 = silence, 1 = voix forte).
   //
   // Performances (WebKitGTK dessine souvent sans carte graphique) : pas de `filter: blur`
   // (mesuré : 16 img/s avec, la douceur vient déjà des dégradés radiaux), pas d'agrandissement
   // lié à la voix, et une respiration arrondie au 1/20e pour ne pas redessiner à chaque message.
-  type Props = { energy: number; mood: "agent" | "user" | "calm" };
+  type Props = { energy: number; mood: "user" | "calm" };
   let { energy, mood }: Props = $props();
 
   let level = $state(0);

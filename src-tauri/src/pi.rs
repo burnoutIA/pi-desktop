@@ -12,14 +12,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 
-/// Consigne ajoutée au prompt système de pi pour produire un résumé à lire à voix haute.
+/// Consigne ajoutée au prompt système de pi : il est piloté à la voix (dictée transcrite).
 pub const VOICE_PROMPT: &str = "Tu es piloté à la voix depuis une application de bureau. \
-Les messages de l'utilisateur sont des transcriptions vocales automatiques : ils peuvent contenir \
-des erreurs de reconnaissance, interprète-les avec bon sens. \
-À la toute fin de ta réponse finale (quand tu as fini de travailler), ajoute un court résumé \
-destiné à être lu à voix haute, entre les balises <oral> et </oral>. Règles pour ce résumé : \
-en français, une à trois phrases naturelles et parlées, sans markdown, sans code, sans liste, \
-sans URL, sans chemin complet (dis juste le nom du fichier). N'utilise ces balises qu'une fois, à la fin.";
+Les messages de l'utilisateur sont souvent des transcriptions vocales automatiques : ils peuvent contenir \
+des erreurs de reconnaissance, interprète-les avec bon sens.";
 
 /// Consigne vocale, avec le nom de l'agent s'il en a un, suivie de la consigne sur les extensions.
 fn voice_prompt(name: Option<&str>) -> String {
@@ -71,8 +67,6 @@ pub fn prompt_path(scope: &str, root: Option<&str>) -> Result<std::path::PathBuf
         _ => Ok(agent_dir().join("APPEND_SYSTEM.md")),
     }
 }
-
-pub type EventHook = Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// Ce qu'un run fait tourner : le pi de l'app sur un dossier, ou un dot joint par `dot @nom rpc`.
 pub enum Launch {
@@ -305,7 +299,7 @@ impl PiInstance {
     }
 
     /// Lance pi (ou rejoint un dot) et arrête l'instance précédente.
-    pub async fn start(&self, app: AppHandle, launch: Launch, agent_name: Option<String>, hook: EventHook) -> Result<()> {
+    pub async fn start(&self, app: AppHandle, launch: Launch, agent_name: Option<String>) -> Result<()> {
         self.stop().await;
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -388,7 +382,6 @@ impl PiInstance {
                     Some("agent_settled") => busy_out.store(false, Ordering::SeqCst),
                     _ => {}
                 }
-                hook(&value);
                 let _ = app_out.emit("pi-event", json!({ "run": run_out, "event": value }));
             }
             busy_out.store(false, Ordering::SeqCst);
@@ -544,7 +537,7 @@ impl PiManager {
     }
 
     /// Lance (ou relance) le pi d'un run.
-    pub async fn start(&self, app: AppHandle, run: String, launch: Launch, agent_name: Option<String>, hook: EventHook) -> Result<()> {
+    pub async fn start(&self, app: AppHandle, run: String, launch: Launch, agent_name: Option<String>) -> Result<()> {
         let inst = {
             let mut runs = self.runs.lock().await;
             match runs.get(&run) {
@@ -559,7 +552,7 @@ impl PiManager {
                 }
             }
         };
-        inst.start(app, launch, agent_name, hook).await
+        inst.start(app, launch, agent_name).await
     }
 
     /// Arrête le pi d'un run et l'oublie.
@@ -604,7 +597,7 @@ mod tests {
         inst.add_note(&mut prompt);
         let m = prompt["message"].as_str().unwrap();
         assert!(m.starts_with("bonjour\n\n<pi-voice>") && m.ends_with("</pi-voice>"));
-        assert!(m.contains("Jarvis") && m.contains("<oral>"));
+        assert!(m.contains("Jarvis") && m.contains("transcriptions vocales"));
 
         let mut cmd = json!({ "type": "prompt", "message": "/status" });
         inst.add_note(&mut cmd);

@@ -14,9 +14,7 @@ export type Item =
       output: string;
       durationMs?: number;
     }
-  | { kind: "notice"; id: string; text: string; tone: "info" | "warn" }
-  /** Échange avec l'agent vocal (pas un message de pi). */
-  | { kind: "voice"; id: string; who: "user" | "agent"; text: string; action?: string };
+  | { kind: "notice"; id: string; text: string; tone: "info" | "warn" };
 
 const FILE_TOOLS = new Set(["write", "edit", "multiedit", "create", "str_replace"]);
 
@@ -114,28 +112,6 @@ export class Session {
     this.items = items;
   }
 
-  voice(who: "user" | "agent", text: string, action?: string) {
-    this.items.push({ kind: "voice", id: uid("v"), who, text, action });
-  }
-
-  /** L'état de pi en quelques lignes, pour l'agent vocal. */
-  summary(): string {
-    const lines: string[] = [];
-    const lastUser = [...this.items].reverse().find((i) => i.kind === "user") as Extract<Item, { kind: "user" }> | undefined;
-    if (this.busy) lines.push(`pi travaille sur : « ${lastUser?.text.slice(0, 300) ?? "?"} ».`);
-    else lines.push(lastUser ? `pi est inactif. Dernière demande : « ${lastUser.text.slice(0, 300)} ».` : "pi est inactif, aucune demande pour l'instant.");
-    const tools = this.items.filter((i) => i.kind === "tool").slice(-6) as Extract<Item, { kind: "tool" }>[];
-    if (tools.length) {
-      const st = { running: "en cours", ok: "ok", error: "erreur" };
-      lines.push("Derniers outils : " + tools.map((t) => `${t.name} ${toolPath(t.args) ?? ""} (${st[t.status]})`.replace(/\s+\(/, " (")).join(", ") + ".");
-    }
-    const last = [...this.items].reverse().find((i) => i.kind === "assistant") as Extract<Item, { kind: "assistant" }> | undefined;
-    const text = last?.blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-    if (text) lines.push(`Dernière réponse de pi : « ${text.length > 600 ? "…" + text.slice(-600) : text} ».`);
-    if (this.queue.steering.length) lines.push(`Consignes en attente pour pi : ${this.queue.steering.length}.`);
-    return lines.join("\n");
-  }
-
   notice(text: string, tone: "info" | "warn" = "info") {
     this.items.push({ kind: "notice", id: uid("n"), text, tone });
   }
@@ -229,7 +205,10 @@ export class Session {
         break;
       }
       case "queue_update":
-        this.queue = { steering: ev.steering ?? [], followUp: ev.followUp ?? [] };
+        this.queue = {
+          steering: (ev.steering ?? []).map(userText),
+          followUp: (ev.followUp ?? []).map(userText),
+        };
         break;
       case "auto_retry_start":
         this.status = `Nouvel essai ${ev.attempt}/${ev.maxAttempts}…`;
@@ -256,12 +235,7 @@ export class Session {
   }
 }
 
-/** Sépare le texte affiché et le résumé oral `<oral>…</oral>`. */
-export function splitOral(text: string): { body: string; oral: string | null } {
-  const open = text.indexOf("<oral>");
-  if (open < 0) return { body: text, oral: null };
-  const close = text.indexOf("</oral>", open);
-  const oral = text.slice(open + 6, close < 0 ? undefined : close).trim();
-  const body = (text.slice(0, open) + (close < 0 ? "" : text.slice(close + 7))).trim();
-  return { body, oral };
+/** Anciennes réponses : pi ajoutait un résumé à lire entre `<oral>` et `</oral>`. On garde le texte, sans les balises. */
+export function stripOral(text: string): string {
+  return text.replace(/<\/?oral\s*>/gi, "").trim();
 }

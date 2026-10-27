@@ -8,7 +8,6 @@ mod pi;
 mod preview;
 mod servers;
 mod sessions;
-mod speech;
 mod term;
 mod voice;
 
@@ -47,11 +46,8 @@ async fn pi_start(
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("Le dossier « {cwd} » n'existe pas. Ouvre un projet avec Ctrl+O."));
     }
-    let voice = state.voice.clone();
-    let id = run.clone();
-    let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(&id, ev));
     let launch = pi::Launch::Local { cwd, resume: resume.unwrap_or(false), session, extra_prompt };
-    state.pi.start(app, run, launch, agent_name, hook).await.map_err(err)
+    state.pi.start(app, run, launch, agent_name).await.map_err(err)
 }
 
 /// Rejoint un dot (`dot <dossier> rpc`) : même protocole que pi, sa configuration lui appartient.
@@ -59,10 +55,7 @@ async fn pi_start(
 async fn pi_start_dot(app: AppHandle, state: State<'_, AppState>, run: String, dir: String, agent_name: Option<String>) -> Res<()> {
     let cli = dots::cli().ok_or("script dot introuvable : indique son chemin dans les réglages (onglet Agent)")?;
     let dir = dots::ready(&dir).await.inspect_err(|e| applog!("dots : {dir} pas prêt : {e:#}")).map_err(err)?;
-    let voice = state.voice.clone();
-    let id = run.clone();
-    let hook: pi::EventHook = Arc::new(move |ev: &Value| voice.on_pi_event(&id, ev));
-    state.pi.start(app, run.clone(), pi::Launch::Dot { cli, dir: dir.clone() }, agent_name, hook).await.map_err(err)?;
+    state.pi.start(app, run.clone(), pi::Launch::Dot { cli, dir: dir.clone() }, agent_name).await.map_err(err)?;
     // Le connecteur s'arrête aussitôt si le dot refuse : on vérifie que la conversation répond.
     let probe = tokio::time::timeout(std::time::Duration::from_secs(20), state.pi.send(&run, serde_json::json!({ "type": "get_state" }))).await;
     if !matches!(probe, Ok(Ok(_))) {
@@ -149,12 +142,6 @@ async fn pi_write(state: State<'_, AppState>, run: String, record: Value) -> Res
     state.pi.write(&run, record).await.map_err(err)
 }
 
-/// Run affiché : le seul qui parle à voix haute.
-#[tauri::command]
-fn voice_set_active_run(state: State<'_, AppState>, run: String) {
-    state.voice.set_active_run(&run);
-}
-
 /// Quitter pour de bon (après confirmation quand des runs travaillent).
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -184,27 +171,6 @@ fn worktree_remove(root: String, path: String, branch: String, delete_branch: bo
 #[tauri::command]
 fn voice_listen(state: State<'_, AppState>, on: bool, submit: bool) {
     state.voice.set_listening(on, submit);
-}
-
-#[tauri::command]
-fn voice_stop_speaking(state: State<'_, AppState>) {
-    state.voice.stop_speaking();
-}
-
-#[tauri::command]
-fn voice_speak(state: State<'_, AppState>, text: String) {
-    state.voice.speak_text(&text);
-}
-
-/// Agent vocal : ce que tu viens de dire, avec l'état de pi vu par l'interface.
-#[tauri::command]
-fn voice_agent_ask(state: State<'_, AppState>, run: String, text: String, pi_state: String, pi_model: Option<String>) {
-    state.voice.agent_ask(run, text, pi_state, pi_model);
-}
-
-#[tauri::command]
-fn voice_agent_reset(state: State<'_, AppState>, run: Option<String>) {
-    state.voice.agent_reset(run.as_deref());
 }
 
 #[tauri::command]
@@ -506,17 +472,12 @@ pub fn run() {
             watch_dir,
             pi_send,
             pi_write,
-            voice_set_active_run,
             quit_app,
             worktree_create,
             worktree_info,
             worktree_merge,
             worktree_remove,
             voice_listen,
-            voice_stop_speaking,
-            voice_speak,
-            voice_agent_ask,
-            voice_agent_reset,
             voice_get_config,
             voice_set_config,
             voice_stt_connected,

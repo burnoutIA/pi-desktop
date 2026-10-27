@@ -29,7 +29,7 @@ export function fillDemo(session: Session) {
         {
           type: "text",
           text:
-            "C'est fait. J'ai ajouté :\n\n- un **bouton** dans la barre d'outils ;\n- des variables CSS `--bg` et `--text` ;\n- la mémorisation dans `localStorage`.\n\n<oral>Le mode sombre est en place, avec un bouton dans la barre d'outils, et ton choix est gardé d'une fois sur l'autre.</oral>",
+            "C'est fait. J'ai ajouté :\n\n- un **bouton** dans la barre d'outils ;\n- des variables CSS `--bg` et `--text` ;\n- la mémorisation dans `localStorage`.",
         },
       ],
     },

@@ -6,7 +6,6 @@
     api,
     on,
     DEFAULT_AGENT,
-    FRENCH_VOICES,
     type AgentConfig,
     type Attachment,
     type AudioLevels,
@@ -18,7 +17,7 @@
     type SessionInfo,
     type VoiceConfig,
   } from "./lib/api";
-  import { Session, splitOral } from "./lib/session.svelte";
+  import { Session, stripOral } from "./lib/session.svelte";
   import { Run, branchPrompt, loadBranchRuns, saveBranchRuns } from "./lib/run.svelte";
   import { chime } from "./lib/chime";
   import { displayName } from "./lib/titles";
@@ -66,13 +65,10 @@
   /** Change seulement quand un vrai fichier du projet change (pas git) : recharge l'aperçu local. */
   let previewKey = $state(0);
 
-  let levels = $state<AudioLevels>({ out: [], in: [], outRms: 0, inRms: 0 });
-  let speaking = $state(false);
+  let levels = $state<AudioLevels>({ in: [], inRms: 0 });
   let listening = $state(false);
   let sttUp = $state(false);
   let voiceCfg = $state<VoiceConfig | null>(null);
-  /** Le brouillon vient de la voix (et non du clavier) : il passera par l'agent vocal. */
-  let voiceDraft = false;
   let showSettings = $state(false);
   let vizStyle = $state<VizStyle>(loadViz());
   let servers = $state<ServersState>("starting");
@@ -202,26 +198,14 @@
   const zenActive = $derived(zen && !onboarding);
   // L'aperçu web est une vraie fenêtre native : rien ne peut passer par-dessus, le composer ne déborde pas de ce côté.
   const overRight = $derived(layout.right && preview?.kind !== "url");
-  /** Dernier résumé vocal de l'agent (sous-titre du mode zen). */
-  const lastOral = $derived.by(() => {
-    for (let i = session.items.length - 1; i >= 0; i--) {
-      const it = session.items[i];
-      if (it.kind === "assistant") {
-        const t = it.blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
-        return splitOral(t).oral ?? "";
-      }
-    }
-    return "";
-  });
-
   // ---------- Banc d'essai de l'affichage (PIVOICE_BENCH=1) ----------
   async function runBench() {
     const stats = () => (window as any).__eqStats as { gaps: number[]; draws: number[] };
     const pct = (a: number[], p: number) => [...a].sort((x, y) => x - y)[Math.floor(a.length * p)] ?? 0;
-    // Voix simulée, arrivant comme les vrais niveaux : ~45 messages/s.
+    // Micro simulé, arrivant comme les vrais niveaux : ~45 messages/s.
     const zenBefore = localStorage.getItem("zen");
-    speaking = true;
-    const feed = setInterval(() => (levels = { out: demoLevels(performance.now()), in: [], outRms: 0.08, inRms: 0 }), 22);
+    listening = true;
+    const feed = setInterval(() => (levels = { in: demoLevels(performance.now()), inRms: 0.08 }), 22);
     for (const [label, z] of [["normal", false], ["zen", true]] as const) {
       zen = z;
       await new Promise((r) => setTimeout(r, 1500)); // laisser la mise en page se stabiliser
@@ -236,7 +220,7 @@
         `bench ${label}: ${fps.toFixed(1)} img/s · intervalle médian ${pct(g, 0.5).toFixed(1)} ms, p95 ${pct(g, 0.95).toFixed(1)} ms, max ${Math.max(...g).toFixed(0)} ms · ${janky}/${g.length} images > 25 ms · dessin médian ${pct(d, 0.5).toFixed(2)} ms, p95 ${pct(d, 0.95).toFixed(2)} ms`,
       );
     }
-    // Scénario « pi écrit pendant qu'il parle » : une réponse markdown avec du code qui arrive par morceaux.
+    // Scénario « pi écrit pendant que tu parles » : une réponse markdown avec du code qui arrive par morceaux.
     zen = false;
     session.items = [{ kind: "assistant", id: "bench", blocks: [{ type: "text", text: "" }], streaming: true }];
     // Réponse déjà longue (~18 000 caractères), comme une vraie réponse détaillée.
@@ -437,9 +421,8 @@
     if (!user || user.kind !== "user" || !reply || reply.kind !== "assistant") return;
     r.titled.add(path);
     const text = reply.blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
-    const { body, oral } = splitOral(text);
     try {
-      const title = await api.generateTitle(r.cwd, r.modelKey, user.text, body || oral || "");
+      const title = await api.generateTitle(r.cwd, r.modelKey, user.text, stripOral(text));
       if (r.sessionPath !== path) return; // on a changé de session entre-temps
       await r.send({ type: "set_session_name", name: title });
       if (r.branch) r.label = title;
@@ -453,7 +436,6 @@
     if (!run) return;
     // pi travaille : la nouvelle session part en parallèle, sur une branche.
     if (session.busy) return run.dot ? toast("Le dot travaille : attends qu'il ait fini, ou arrête-le.") : startParallel();
-    await api.stopSpeaking();
     const r = await run.send({ type: "new_session" });
     if (r?.data?.cancelled) return toast("Nouvelle session annulée par une extension.");
     session.reset();
@@ -462,7 +444,6 @@
 
   async function openSession(s: SessionInfo) {
     if (session.busy || !run) return;
-    await api.stopSpeaking();
     const r = await run.send({ type: "switch_session", sessionPath: s.path });
     if (r?.success === false) return toast(r.error ?? "Impossible d'ouvrir cette session");
     if (r?.data?.cancelled) return toast("Changement de session annulé par une extension.");
@@ -497,7 +478,6 @@
     const renamed = a.name.trim() !== agent.name.trim();
     agent = a;
     localStorage.setItem("agentConfig", JSON.stringify(a));
-    if (voiceCfg) updateVoice(voiceCfg); // le nom de l'agent vocal suit celui de l'agent
     if (renamed && run) restartPi("Nom changé : pi redémarre pour le prendre en compte.");
   }
 
@@ -541,7 +521,12 @@
     models = list.map((m: any) => ({ key: `${m.provider}/${m.id}`, label: m.name ?? m.id }));
     modelInputs = Object.fromEntries(list.map((m: any) => [`${m.provider}/${m.id}`, m.input ?? ["text"]]));
     modelLocal = Object.fromEntries(
-      list.map((m: any) => [`${m.provider}/${m.id}`, /\/\/(127\.0\.0\.1|localhost|\[::1\])\b/.test(m.baseUrl ?? "")]),
+      // Un dot (conteneur) joint la machine via host.docker.internal, parfois derrière son proxy
+      // (http://dot-vault:8080/http/host.docker.internal:4748/v1) : on cherche l'hôte partout dans l'URL.
+      list.map((m: any) => [
+        `${m.provider}/${m.id}`,
+        /\/(127\.0\.0\.1|localhost|\[::1\]|host\.docker\.internal|host\.containers\.internal)(:|\/|$)/.test(m.baseUrl ?? ""),
+      ]),
     );
     const keys = models.map((m) => m.key);
     const wanted = applyDefault && defaultModel && keys.includes(defaultModel) ? defaultModel : null;
@@ -570,8 +555,8 @@
   }
 
   let draft = $state("");
-  const zenSubtitle = $derived(listening ? draft : speaking ? lastOral : "");
-  const zenEnergy = $derived(listening ? levels.inRms * 10 : speaking ? levels.outRms * 8 : 0);
+  const zenSubtitle = $derived(listening ? draft : "");
+  const zenEnergy = $derived(listening ? levels.inRms * 10 : 0);
   let countdown = $state<number | null>(null);
   let countdownRaf = 0;
 
@@ -643,7 +628,6 @@
     pinned = false;
     files = [];
     git = { isRepo: false, branch: null, files: [] };
-    await api.voiceSetActiveRun(r.id);
     if (!r.branch && !r.dot && !r.root.startsWith("/tmp/")) localStorage.setItem("lastProject", r.root);
     try {
       await api.watchDir(r.cwd);
@@ -651,11 +635,7 @@
     } catch (e) {
       api.log(`affichage du run ${r.id} : ${e}`);
     }
-    // Revenu sur un run qui a fini en arrière-plan : on lit son résumé, s'il n'a pas été lu.
-    const oral = r.pendingOral;
-    r.pendingOral = null;
     if (r.attention !== "waiting") r.attention = null;
-    if (oral && voiceCfg?.ttsEnabled) api.speak(oral);
   }
 
   /** Ouvre un projet : son run s'il tourne déjà, sinon un nouveau. Le run affiché continue. */
@@ -725,7 +705,6 @@
   async function dropBranchRun(r: Run) {
     await api.piStop(r.id);
     runs = runs.filter((x) => x !== r);
-    api.voiceAgentReset(r.id);
     if (visibleId === r.id) {
       visibleId = null;
       await openProject(r.root);
@@ -983,18 +962,12 @@
     if (listening) {
       await api.listen(false, true); // arrêt manuel : on envoie après les derniers mots
     } else {
-      if (speaking) await api.stopSpeaking();
       await api.listen(true);
     }
   }
 
-  async function stopVoice() {
-    await api.stopSpeaking();
-  }
-
   function onEscape() {
     if (countdown !== null) return cancelAuto();
-    if (speaking) return void api.stopSpeaking();
     if (listening) return void api.listen(false, false);
     if (preview) return closePreview();
     if (selected) return closeFile();
@@ -1006,11 +979,8 @@
   }
 
   async function updateVoice(c: VoiceConfig) {
-    // Anciens réglages du mode mains libres (retiré) : on ne les renvoie plus.
-    const { handsFree, wakeUrl, wakeWord, filterDb, ackOnPause, ...rest } = c as VoiceConfig & Record<string, unknown>;
-    c = { ...rest, agentName: agent.name.trim() || "pi" } as VoiceConfig;
-    // Voix d'un ancien moteur (TTS Kyutai 1,6B) : remplacée par la voix française de Pocket TTS.
-    if (!FRENCH_VOICES.some((v) => v.id === c.voice)) c = { ...c, voice: "estelle" };
+    // Seule l'adresse du serveur de transcription reste (anciens réglages de voix ignorés).
+    c = { sttUrl: c.sttUrl };
     voiceCfg = c;
     localStorage.setItem("voiceConfig", JSON.stringify(c));
     await api.setVoiceConfig(c);
@@ -1032,7 +1002,7 @@
     }
   }
 
-  /** Arrête le pi d'un run sans couper la voix (l'agent vocal est peut-être en train de le dire). */
+  /** Arrête le pi d'un run. */
   async function stopPi(r: Run | null) {
     if (!r) return;
     try {
@@ -1043,39 +1013,15 @@
     }
   }
 
-  /** Dernière phrase dictée envoyée à l'agent vocal (repli vers pi s'il ne répond pas). */
-  let agentAsked = "";
-  /** Réponse de l'agent vocal attendue (pas encore d'action reçue). */
-  let agentPending = false;
-  const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
-  /** Action de la réponse en cours de l'agent vocal, affichée avec sa réponse. */
-  let pendingAction: string | null = null;
-
   async function send() {
     cancelAuto();
     const text = draft.trim();
     if (!text && !attachments.length) return;
-    const fromVoice = voiceDraft;
-    voiceDraft = false;
-    if (fromVoice && voiceCfg?.voiceAgent && !attachments.length && !text.startsWith("/")) {
-      draft = "";
-      if (listening) await api.listen(false, false);
-      session.voice("user", text);
-      if (STOP_WORDS.test(text)) return abort(); // « stop » : pas besoin de l'agent pour ça
-      // L'agent n'a pas encore décidé quoi faire de la phrase précédente : on les envoie ensemble,
-      // au lieu de perdre la première.
-      const ask = agentPending && agentAsked ? `${agentAsked} ${text}` : text;
-      agentAsked = ask;
-      agentPending = true;
-      if (run) await api.voiceAgentAsk(run.id, ask, session.summary(), modelKey);
-      return;
-    }
     if (!run || !piUp) {
       toast("pi n'est pas démarré : ouvre un projet d'abord.");
       return;
     }
     draft = "";
-    if (speaking) await api.stopSpeaking();
     if (listening) await api.listen(false, false);
     try {
       // Commandes « / » : celles de l'app d'abord, sinon pi s'en charge (skills, modèles, extensions).
@@ -1104,7 +1050,6 @@
 
   async function abort() {
     try {
-      await api.stopSpeaking();
       await stopPi(run);
     } catch (e) {
       toast(String(e));
@@ -1145,13 +1090,8 @@
           refreshSessions(r).then(() => maybeTitle(r));
           if (!r.dot && dotsCli) refreshDots();
           if (r.id !== visibleId) {
-            // Fini en arrière-plan : son résumé oral attend qu'on revienne sur lui.
             const last = [...r.session.items].reverse().find((i) => i.kind === "assistant");
             const failed = last?.kind === "assistant" && !!last.error;
-            if (last?.kind === "assistant") {
-              const t = last.blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n");
-              r.pendingOral = splitOral(t).oral || null;
-            }
             if (!ev.aborted) notifyBackground(r, failed ? "error" : "done");
           }
         } else if (ev.type === "session_info_changed") refreshSessions(r);
@@ -1170,7 +1110,6 @@
       }),
       on<string[]>("close-requested", (ids) => (closeAsk = ids)),
       on<AudioLevels>("audio-levels", (l) => (levels = l)),
-      on<boolean>("voice-speaking", (s) => (speaking = s)),
       on<boolean>("voice-listening", (l) => (listening = l)),
       on<{ stt: boolean }>("voice-status", (s) => (sttUp = s.stt)),
       on<string>("voice-error", (e) => {
@@ -1180,11 +1119,10 @@
       }),
       on<ServersState>("voice-servers", (s) => {
         servers = s;
-        if (s === "failed") toast("Les serveurs vocaux n'ont pas démarré : voir ~/.cache/pi-voice/voice-server.log");
+        if (s === "failed") toast("Le serveur de transcription n'a pas démarré : voir ~/.cache/pi-voice/voice-server.log");
       }),
       on<string>("stt-word", (w) => {
         cancelAuto();
-        voiceDraft = true;
         draft = draft && !/\s$/.test(draft) ? `${draft} ${w}` : draft + w;
       }),
       on<{ reason: string }>("stt-turn-end", ({ reason }) => {
@@ -1195,27 +1133,6 @@
       on<string[]>("fs-changed", (paths) => {
         if (paths.some((p) => !p.startsWith(".git/"))) previewKey++;
         scheduleRefresh();
-      }),
-      on<{ run: string; kind: string; action?: string; instruction?: string; text?: string; message?: string }>("voice-agent", (e) => {
-        // La réponse va au run à qui la phrase était adressée, même si on a changé de projet depuis.
-        const target = runs.find((x) => x.id === e.run) ?? null;
-        if (e.kind === "action") {
-          agentPending = false;
-          const asked = agentAsked;
-          let instruction = e.instruction || asked;
-          // Consigne bien plus longue que ce que tu as dit : l'agent a brodé, on envoie tes mots.
-          if (wordCount(instruction) > Math.max(2 * wordCount(asked), wordCount(asked) + 12)) instruction = asked;
-          if (e.action === "transmettre") sendToPi(target, instruction);
-          else if (e.action === "arreter") stopPi(target);
-          if (e.action !== "repondre") pendingAction = e.action ?? null;
-        } else if (e.kind === "reply") {
-          if (e.text) target?.session.voice("agent", e.text, pendingAction ?? undefined);
-          pendingAction = null;
-        } else if (e.kind === "error") {
-          agentPending = false;
-          toast(`Agent vocal injoignable (${e.message}) : demande envoyée directement à pi.`);
-          if (e.text) sendToPi(target, e.text);
-        }
       }),
     ];
 
@@ -1277,9 +1194,9 @@
         { name: "skill:review", description: "Relire le code modifié", source: "skill" },
         { name: "fix-tests", description: "Corriger les tests qui échouent", source: "prompt" },
       ];
-      speaking = !dq.has("idle");
+      listening = dq.has("listening");
       if (dq.has("idle")) demo.session.busy = false;
-      voiceCfg = { sttUrl: "", ttsUrl: "", voice: "estelle", ttsEnabled: true, agentName: "jarvis", voiceAgent: true, agentUrl: "" };
+      voiceCfg = { sttUrl: "" };
       agent = { name: "Jarvis" };
       const q = new URLSearchParams(location.search).get("settings");
       if (q) {
@@ -1288,11 +1205,9 @@
       }
       const tick = () => {
         levels = {
-          out: speaking ? demoLevels(performance.now()) : [],
-          in: [],
-          outRms: 0.1,
-          inRms: 0,
-          outWave: speaking ? demoWave(performance.now()) : [],
+          in: listening ? demoLevels(performance.now()) : [],
+          inRms: listening ? 0.05 : 0,
+          inWave: listening ? demoWave(performance.now()) : [],
         };
         demoRaf = requestAnimationFrame(tick);
       };
@@ -1514,25 +1429,21 @@
       class:no-over={!layout.left && !overRight}
     >
       {#if zenActive}
-        <Ambient energy={zenEnergy} mood={listening ? "user" : speaking ? "agent" : "calm"} />
+        <Ambient energy={zenEnergy} mood={listening ? "user" : "calm"} />
       {/if}
       <VoiceStage
         zen={zenActive}
         subtitle={zenSubtitle}
         {vizStyle}
-        agentWave={levels.outWave ?? []}
         userWave={levels.inWave ?? []}
-        agentLevels={levels.out}
         userLevels={levels.in}
         inRms={levels.inRms}
-        {speaking}
         {listening}
         busy={session.busy}
         {sttUp}
         {voiceBooting}
         {agentName}
         onMic={toggleMic}
-        onStopVoice={stopVoice}
       />
       <div class="feed" class:hidden={zenActive}>
         {#if onboarding}
@@ -1549,7 +1460,6 @@
             {root}
             onOpenProject={pickProject}
             onOpenFile={(p) => selectFile(relPath(p))}
-            onReplay={(t) => api.speak(t)}
             {agentName}
           />
         {/if}
@@ -1625,7 +1535,6 @@
     hasProject={!!root}
     onOpenProject={pickProject}
     busy={session.busy}
-    {speaking}
     {listening}
     {sttUp}
     {voiceBooting}
