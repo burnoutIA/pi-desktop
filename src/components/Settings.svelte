@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AgentConfig, type VoiceConfig } from "../lib/api";
+  import { api, DEFAULT_WATCHDOG, type AgentConfig, type VoiceConfig, type WatchdogConfig } from "../lib/api";
   import { PALETTES, loadThemePref, previewTokens, resolveMode, saveThemePref, type ModePref } from "../lib/theme";
   import { VIZ_STYLES, loadViz, saveViz, type VizStyle } from "../lib/viz";
 
@@ -52,6 +52,16 @@
   }
   function setAgent<K extends keyof AgentConfig>(k: K, v: AgentConfig[K]) {
     onAgent({ ...agent, [k]: v });
+  }
+
+  // ---------- Commandes longues (pi-extensions/watchdog.ts) ----------
+  let watchdog = $state<WatchdogConfig>({ ...DEFAULT_WATCHDOG });
+  api.watchdogGet().then((w) => (watchdog = { ...DEFAULT_WATCHDOG, ...w })).catch(() => {});
+  function setWatchdog(k: keyof WatchdogConfig, raw: string, min: number, max: number) {
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return;
+    watchdog = { ...watchdog, [k]: Math.min(max, Math.max(min, v)) };
+    api.watchdogSet(watchdog).catch((e) => toast(`Réglage non enregistré : ${e}`));
   }
 
   // ---------- Prompt système (APPEND_SYSTEM.md) ----------
@@ -155,6 +165,36 @@
           : "Script dot introuvable : indique son chemin pour créer des dots et leur parler."}
       </small>
     </label>
+
+    <div class="field">
+      <span>Commandes longues</span>
+      <div class="watchdog">
+        <label>
+          Point d'étape après
+          <input type="number" min="0.5" max="60" step="0.5" value={watchdog.checkpointSeconds / 60}
+            onchange={(e) => setWatchdog("checkpointSeconds", String(Number((e.target as HTMLInputElement).value) * 60), 10, 3600)} />
+          min
+        </label>
+        <label>
+          Alerte sous
+          <input type="number" min="1" max="90" value={watchdog.alertPercent}
+            onchange={(e) => setWatchdog("alertPercent", (e.target as HTMLInputElement).value, 1, 90)} />
+          % de RAM libre
+        </label>
+        <label>
+          Arrêt sous
+          <input type="number" min="1" max="50" value={watchdog.killPercent}
+            onchange={(e) => setWatchdog("killPercent", (e.target as HTMLInputElement).value, 1, 50)} />
+          % de RAM libre
+        </label>
+      </div>
+      <small>
+        Une commande plus longue rend la main à pi avec un point d'étape (CPU, mémoire, sortie) et continue en
+        arrière-plan : pi décide d'attendre ou de l'arrêter, sans durée maximale. Sous le seuil d'alerte, il est prévenu
+        tout de suite ; sous le seuil d'arrêt (jamais moins de {watchdog.killFloorGb} Go), la commande qui remplit la
+        mémoire est tuée d'office.
+      </small>
+    </div>
 
     <div class="field">
       <div class="row">
@@ -335,6 +375,22 @@
   textarea:focus,
   select:focus {
     border-color: var(--agent-1);
+  }
+  .watchdog {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .watchdog label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-2);
+  }
+  .watchdog input {
+    flex: 0 0 64px !important;
+    width: 64px;
+    text-align: right;
   }
   .prompt {
     min-height: 170px;

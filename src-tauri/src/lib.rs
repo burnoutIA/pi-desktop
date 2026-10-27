@@ -91,6 +91,25 @@ fn dots_set_cli(path: String) -> Res<()> {
     dots::set_cli(&path).map_err(err)
 }
 
+/// Réglages du garde-fou des commandes longues (`pi-extensions/watchdog.ts`), dans le dossier de
+/// l'agent : `{}` si rien n'est enregistré (l'extension prend alors ses valeurs par défaut).
+#[tauri::command]
+fn watchdog_get() -> Value {
+    std::fs::read_to_string(pi::agent_dir().join("watchdog.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// L'extension relit le fichier à chaque mesure : pas besoin de relancer pi.
+#[tauri::command]
+fn watchdog_set(config: Value) -> Res<()> {
+    let dir = pi::agent_dir();
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let text = serde_json::to_string_pretty(&config).map_err(err)?;
+    std::fs::write(dir.join("watchdog.json"), text).map_err(err)
+}
+
 #[tauri::command]
 async fn dots_list() -> Res<Value> {
     dots::list().await.map_err(err)
@@ -465,6 +484,8 @@ pub fn run() {
             pi_start_dot,
             dots_info,
             dots_set_cli,
+            watchdog_get,
+            watchdog_set,
             dots_list,
             dots_create,
             dots_action,

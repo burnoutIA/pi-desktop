@@ -17,6 +17,10 @@ export type AgentConfig = {
 
 export const DEFAULT_AGENT: AgentConfig = { name: "" };
 
+/** Mêmes valeurs par défaut que `pi-extensions/watchdog.ts`. */
+export type WatchdogConfig = { alertPercent: number; killPercent: number; killFloorGb: number; checkpointSeconds: number };
+export const DEFAULT_WATCHDOG: WatchdogConfig = { alertPercent: 20, killPercent: 6, killFloorGb: 4, checkpointSeconds: 120 };
+
 /** Serveurs vocaux : déjà lancés à la main, en démarrage par l'app, prêts, ou en échec. */
 export type ServersState = "external" | "starting" | "ready" | "failed";
 
@@ -62,6 +66,9 @@ export const api = {
   dotsInfo: () => invoke<DotsInfo>("dots_info"),
   dotsSetCli: (path: string) => invoke<void>("dots_set_cli", { path }),
   dotsList: () => invoke<DotInfo[]>("dots_list"),
+  /** Garde-fou des commandes longues de pi (seuils en % de la RAM disponible). */
+  watchdogGet: () => invoke<Partial<WatchdogConfig>>("watchdog_get"),
+  watchdogSet: (config: WatchdogConfig) => invoke<void>("watchdog_set", { config }),
   /** Nouveau dot dans l'app : copie vierge du dot du dossier `from`, ou `.dot` à remplir. */
   dotsCreate: (name: string, from: string | null) => invoke<string>("dots_create", { name, from }),
   dotsAction: (action: DotAction, dir: string) => invoke<string>("dots_action", { action, dir }),

@@ -36,6 +36,16 @@ function textOf(content: unknown): string {
 const APP_NOTE = /\s*<pi-voice>[\s\S]*?<\/pi-voice>\s*$/;
 const userText = (content: unknown) => textOf(content).replace(APP_NOTE, "");
 
+/** Message de l'extension watchdog : un job fini réveille pi. Le texte est pour le modèle ; on montre un résumé. */
+function watchdogNotice(m: any): { text: string; tone: "info" | "warn" } | null {
+  if (m?.role !== "custom" || m.customType !== "watchdog-job") return null;
+  const d = m.details ?? {};
+  const s = Number(d.seconds) || 0;
+  const took = s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : s >= 60 ? `${Math.round(s / 60)} min` : `${s} s`;
+  const what = d.gpu ? `pi se réveille : la commande lancée sur la carte graphique (job ${d.job})` : `Commande en arrière-plan (job ${d.job})`;
+  return { text: `${what} ${d.killed ? "a été arrêtée" : "est terminée"} après ${took}.`, tone: d.killed ? "warn" : "info" };
+}
+
 /** Chemin de fichier visé par un appel d'outil, s'il y en a un. */
 export function toolPath(args: Record<string, any> | undefined): string | undefined {
   if (!args) return undefined;
@@ -71,7 +81,10 @@ export class Session {
     const items: Item[] = [];
     const tools = new Map<string, Extract<Item, { kind: "tool" }>>();
     for (const m of messages ?? []) {
-      if (m?.role === "user") {
+      const wd = watchdogNotice(m);
+      if (wd) {
+        items.push({ kind: "notice", id: uid("n"), ...wd });
+      } else if (m?.role === "user") {
         const text = userText(m.content);
         if (text.trim()) items.push({ kind: "user", id: uid("u"), text });
       } else if (m?.role === "assistant" && Array.isArray(m.content)) {
@@ -129,7 +142,10 @@ export class Session {
         break;
       case "message_start": {
         const m = ev.message;
-        if (m?.role === "user") {
+        const wd = watchdogNotice(m);
+        if (wd) {
+          this.notice(wd.text, wd.tone);
+        } else if (m?.role === "user") {
           this.items.push({ kind: "user", id: uid("u"), text: userText(m.content) });
         } else if (m?.role === "assistant") {
           const item: Item = { kind: "assistant", id: uid("a"), blocks: [], streaming: true };

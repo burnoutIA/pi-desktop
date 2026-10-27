@@ -7,6 +7,7 @@ sous-dossier qui a un `index.ts`.
 | Extension | Rôle |
 |---|---|
 | `preview.ts` | aperçu de fichiers dans l'app |
+| `watchdog.ts` | une commande bash longue rend la main à pi avec un point d'étape et continue en job (`job_wait`, `job_kill`) ; garde-fou mémoire, réglable dans l'onglet Agent ; `gpu: true` prête la carte graphique (harn décharge le modèle, pi dort, puis il est réveillé avec le résultat) |
 | `ctx-optimizer/` | allège le contexte envoyé au modèle (repris de [burnoutIA/ctx_optimizer](https://github.com/burnoutIA/ctx_optimizer)) |
 
 ## Tes propres extensions ne vont pas ici
