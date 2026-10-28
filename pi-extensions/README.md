@@ -8,6 +8,7 @@ sous-dossier qui a un `index.ts`.
 |---|---|
 | `preview.ts` | aperçu de fichiers dans l'app |
 | `watchdog.ts` | une commande bash longue rend la main à pi avec un point d'étape et continue en job (`job_wait`, `job_kill`) ; garde-fou mémoire, réglable dans l'onglet Agent ; `gpu: true` prête la carte graphique (harn décharge le modèle, pi dort, puis il est réveillé avec le résultat) |
+| `harn.ts` | la liste des modèles de harn est demandée à harn (`/v1/models`) au lancement et à chaque session, au lieu d'être figée dans `models.json` |
 | `ctx-optimizer/` | allège le contexte envoyé au modèle (repris de [burnoutIA/ctx_optimizer](https://github.com/burnoutIA/ctx_optimizer)) |
 
 ## Tes propres extensions ne vont pas ici
